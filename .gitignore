@@ -1,0 +1,30 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Data (large WAV files, processed stems)
+data/downloads/
+data/processed/
+backend/data/
+
+# Secrets & local config
+backend/youtube_cookies.txt
+.claude/settings.local.json
+
+# Backups
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

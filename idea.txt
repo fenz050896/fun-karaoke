@@ -1,0 +1,10 @@
+halo, saya ingin membuat sebuah fun project yaitu on-demand karaoke.
+ide nya adalah, kita punya user interface berupa web untuk mencari lagu dari youtube.
+lalu, keyword tersebut mencari ke youtube dan mendownload lagunya.
+lalu lagunya nanti akan disimpan (jika perlu), dan lagunya akan diproses dahulu yaitu pemisahan antara instrumen dan vokal (kalau bisa juga bedakan backing vokal dan vokal utama).
+hasilnya adalah dua audio, instrumen dan vokal, lalu vokal nanti akan diekstrak teksnya, dan menjadi lirik pada karaoke.
+dan tampilan web nanti akan menampilkan lirik dan memutar instrumennya.
+begitu lah ide dasarnya.
+nanti kita akan kembangkan lagi.
+
+saya mau pakai podman sebagai container, python sebagai back-end, dan front-end nextjs

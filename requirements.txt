@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+yt-dlp
+demucs==4.0.1
+faster-whisper
+httpx
+python-multipart
+aiofiles
