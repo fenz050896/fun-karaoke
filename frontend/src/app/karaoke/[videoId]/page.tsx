@@ -111,34 +111,6 @@ export default function KaraokePage({
     seek(seekValue)
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 grid place-items-center p-6">
-        <div className="text-center">
-          <p className="text-2xl font-semibold">Loading karaoke...</p>
-          <p className="mt-2 text-zinc-400">Fetching track metadata</p>
-        </div>
-      </div>
-    )
-  }
-
-  if (error || !track) {
-    return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 grid place-items-center p-6">
-        <div className="max-w-md text-center">
-          <p className="text-2xl font-semibold">Track unavailable</p>
-          <p className="mt-2 text-zinc-400">{error || 'No track data found'}</p>
-          <Link
-            href="/"
-            className="inline-block mt-6 rounded-lg bg-zinc-100 px-4 py-2 font-medium text-zinc-950"
-          >
-            Back to search
-          </Link>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="h-screen bg-black text-zinc-100 flex flex-col overflow-hidden">
       {/* Header */}
@@ -146,8 +118,12 @@ export default function KaraokePage({
         <Link href="/" className="text-sm text-zinc-400 hover:text-zinc-200">
           ← Back to Home
         </Link>
-        <h1 className="mt-1 text-xl font-bold leading-tight line-clamp-1">{track.title}</h1>
-        <p className="text-sm text-zinc-400">{track.artist || 'Unknown artist'}</p>
+        <h1 className="mt-1 text-xl font-bold leading-tight line-clamp-1">
+          {track?.title || 'Loading...'}
+        </h1>
+        <p className="text-sm text-zinc-400">
+          {loading ? 'Loading track...' : error ? 'Track unavailable' : track?.artist || 'Unknown artist'}
+        </p>
       </div>
 
       {/* Audio Controls + Mode Switch */}
@@ -229,11 +205,26 @@ export default function KaraokePage({
         <div className="flex flex-col min-h-0 m-3 mr-0 rounded-2xl border border-zinc-900 bg-zinc-950/70 overflow-hidden">
           <div className="shrink-0 flex items-center justify-between px-5 pt-3 pb-2">
             <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Lyrics</h2>
-            <p className="text-xs text-zinc-600">{track.lyrics.length} lines</p>
+            <p className="text-xs text-zinc-600">{track?.lyrics.length ?? 0} lines</p>
           </div>
 
           <div className="flex-1 space-y-2 overflow-y-auto px-5 pb-4 min-h-0">
-            {track.lyrics.length === 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center h-full gap-3">
+                <div className="w-8 h-8 border-2 border-fuchsia-500 border-t-transparent rounded-full animate-spin" />
+                <p className="text-zinc-400 text-sm">Loading lyrics...</p>
+              </div>
+            ) : error ? (
+              <div className="flex flex-col items-center justify-center h-full gap-3">
+                <p className="text-zinc-400 text-sm">{error}</p>
+                <Link
+                  href="/"
+                  className="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-950"
+                >
+                  Back to search
+                </Link>
+              </div>
+            ) : !track || track.lyrics.length === 0 ? (
               <p className="text-zinc-500 text-sm">No lyrics generated.</p>
             ) : (
               track.lyrics.map((line, index) => {
