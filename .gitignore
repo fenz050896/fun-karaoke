@@ -10,8 +10,7 @@ node_modules/
 *.tsbuildinfo
 
 # Data (large WAV files, processed stems)
-data/downloads/
-data/processed/
+data/
 backend/data/
 
 # Secrets & local config

@@ -12,6 +12,8 @@ WORKDIR /app
 ENV PYTHONPATH=/app/venv/lib/python3.12/site-packages:$PYTHONPATH
 ENV PATH=/app/venv/bin:$PATH
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /root/.local /app/venv
 COPY *.py ./
 COPY requirements.txt ./

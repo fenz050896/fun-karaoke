@@ -19,6 +19,11 @@ from lyrics_sync import fetch_lyrics, transcribe_with_whisper
 
 app = FastAPI(title="Fun Karaoke API")
 
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
