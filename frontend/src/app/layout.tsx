@@ -4,6 +4,7 @@ import "./globals.css";
 import Link from "next/link";
 import ClientLayout from "./ClientLayout";
 import ToastProvider from "@/components/shared/ToastProvider";
+import ThemeProvider from "@/components/shared/ThemeProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -53,9 +54,11 @@ export default function RootLayout({
           </div>
         </nav>
         <ToastProvider>
-          <ClientLayout>
-            <div className="flex-1">{children}</div>
-          </ClientLayout>
+          <ThemeProvider>
+            <ClientLayout>
+              <div className="flex-1">{children}</div>
+            </ClientLayout>
+          </ThemeProvider>
         </ToastProvider>
       </body>
     </html>
