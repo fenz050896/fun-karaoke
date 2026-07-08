@@ -4,6 +4,27 @@
 
 User ingin production deployment. Next.js `output: 'standalone'` — build jadi folder mandiri berisi `server.js` + semua dependency di-bundle. Nginx di depan untuk SSL, static caching, dan proxy `/api/` ke backend.
 
+## Current Project Status
+
+**Last checked:** 2026-07-08
+
+**Implemented in repo:**
+- `frontend/next.config.ts` has `output: 'standalone'`.
+- `frontend/package.json` has `"start": "node server.js"`.
+- `frontend/Dockerfile` builds and copies `.next/standalone`, `.next/static`, and `public`.
+- `podman-compose.prod.yml` runs frontend with `node server.js`.
+- `nginx/karaoke.defigroup.id.conf` exists and proxies `/api/` to backend and `/` to Next.js.
+
+**Verified now:**
+- `cd frontend && npm run build` passes.
+
+**Still not verified now:**
+- `.next/standalone/server.js` runtime smoke with `node`.
+- Nginx syntax/reload on target server.
+- Live domain check.
+- Dynamic karaoke route and YouTube/search/queue/play live flow.
+- Static asset cache header check.
+
 ## Approach
 
 `output: 'standalone'` di `next.config.ts`. Build produksi `server.js` yang jalan di Node.js. Nginx reverse proxy dengan optimasi cache untuk static assets (`/_next/static`).
