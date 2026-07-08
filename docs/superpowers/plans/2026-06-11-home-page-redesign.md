@@ -8,6 +8,26 @@
 
 **Tech Stack:** Next.js 15 App Router, React 19, TypeScript, Tailwind CSS, framer-motion
 
+## Current Project Status
+
+**Last checked:** 2026-07-08
+
+**Implementation:** Complete in code and already committed on `main` through:
+- `fb096a4 chore(deps): add framer-motion`
+- `d2cb5ad feat(ui): add toast notification system with framer-motion`
+- `1a5d69d feat(ui): add dark/light theme system with toggle`
+- `bc7cffd feat(ui): add Skeleton and EmptyState shared components`
+- `2cd5598 feat(ui): add SearchForm, SearchResults, QueuePanel, LibraryPanel components`
+- `2e4fe70 refactor(ui): rewrite home page with extracted components and toast notifications`
+
+**Verified now:**
+- `cd frontend && npm run lint` passes.
+- `cd frontend && npm run build` passes.
+- No `alert()` calls remain under `frontend/src`.
+
+**Still not manually re-verified in this status pass:**
+- Browser smoke flow: search, process, queue add/remove, theme persistence, reduced-motion behavior, mobile layout, backend API live flow.
+
 ---
 
 ### Task 1: Install framer-motion
