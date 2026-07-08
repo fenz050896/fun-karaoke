@@ -12,6 +12,8 @@ type Track = {
   artist: string
   status: string
   lyrics: LyricLine[]
+  lyricsSource?: 'lrclib' | 'whisper' | 'none'
+  lyricsStatus?: 'synced' | 'generated' | 'unavailable'
   mode?: string
   saved?: boolean
 }
@@ -72,8 +74,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
 
   const videoIdRef = useRef(videoId)
-  videoIdRef.current = videoId
   const loadingIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    videoIdRef.current = videoId
+  }, [videoId])
 
   // ---- internal helpers ----
 
@@ -190,6 +195,26 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   // ---- public API ----
 
+  const fetchAudioBuffer = useCallback(async (ctx: AudioContext, url: string, label: string) => {
+    let response: Response
+    try {
+      response = await fetch(url)
+    } catch {
+      throw new Error(`${label} audio could not be reached.`)
+    }
+
+    if (!response.ok) {
+      throw new Error(`${label} audio could not be loaded.`)
+    }
+
+    try {
+      const data = await response.arrayBuffer()
+      return await ctx.decodeAudioData(data)
+    } catch {
+      throw new Error(`${label} audio could not be decoded.`)
+    }
+  }, [])
+
   const playTrack = useCallback(async (vid: string, mode?: PlaybackMode) => {
     if (loadingIdRef.current === vid) return
 
@@ -212,7 +237,12 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     videoIdRef.current = vid
 
     stopSources()
+    karaokeBufferRef.current = null
+    fullBufferRef.current = null
     endedGuardRef.current = false
+    setTrack(null)
+    setDuration(0)
+    setCurrentTime(0)
     setLoading(true)
     setError(null)
 
@@ -224,64 +254,46 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       const ctx = ensureCtx()
       if (ctx.state === 'suspended') await ctx.resume()
 
-      // Fetch both audio files in parallel
-      const [instResp, fullResp] = await Promise.all([
-        fetch(getInstrumentalUrl(vid)),
-        fetch(getFullAudioUrl(vid)),
-      ])
-
-      if (!instResp.ok || !fullResp.ok) {
-        throw new Error('Failed to fetch audio files')
+      let data: Track
+      try {
+        data = await getTrack(vid)
+      } catch {
+        throw new Error('Track metadata could not be loaded.')
       }
 
-      const [instBuf, fullBuf] = await Promise.all([
-        instResp.arrayBuffer(),
-        fullResp.arrayBuffer(),
-      ])
-
-      // Decode in parallel
       const [instAudio, fullAudio] = await Promise.all([
-        ctx.decodeAudioData(instBuf),
-        ctx.decodeAudioData(fullBuf),
+        fetchAudioBuffer(ctx, getInstrumentalUrl(vid), 'Instrumental'),
+        fetchAudioBuffer(ctx, getFullAudioUrl(vid), 'Full'),
       ])
 
       karaokeBufferRef.current = instAudio
       fullBufferRef.current = fullAudio
 
+      setTrack(data)
+      setVideoId(vid)
       setDuration(instAudio.duration)
 
-      // Start playback
+      if (!mode && data.mode) {
+        const trackMode = data.mode as PlaybackMode
+        modeRef.current = trackMode
+        setPlaybackMode(trackMode)
+      }
+
       startOffsetRef.current = 0
       createSources(0)
       isPlayingRef.current = true
       setIsPlaying(true)
       startTick()
-
-      // Load metadata
-      try {
-        const data = await getTrack(vid)
-        setTrack(data)
-        setVideoId(vid)
-        if (!mode && data.mode) {
-          const trackMode = data.mode as PlaybackMode
-          modeRef.current = trackMode
-          setPlaybackMode(trackMode)
-          // Update gains
-          if (karaokeGainRef.current && fullGainRef.current) {
-            karaokeGainRef.current.gain.value = trackMode === 'karaoke' ? 1 : 0
-            fullGainRef.current.gain.value = trackMode === 'full' ? 1 : 0
-          }
-        }
-      } catch {
-        setError('Failed to load track metadata')
-      }
     } catch (e) {
+      stopSources()
+      isPlayingRef.current = false
+      setIsPlaying(false)
       setError(e instanceof Error ? e.message : 'Failed to load audio')
     } finally {
       setLoading(false)
       loadingIdRef.current = null
     }
-  }, [ensureCtx, stopSources, createSources, startTick])
+  }, [ensureCtx, stopSources, createSources, startTick, fetchAudioBuffer])
 
   const setMode = useCallback((mode: PlaybackMode) => {
     if (mode === modeRef.current) return

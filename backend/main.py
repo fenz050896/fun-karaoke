@@ -13,9 +13,9 @@ from pydantic import BaseModel
 
 import config
 from config import DOWNLOADS_DIR, PROCESSED_DIR, DEMUCS_MODEL, WHISPER_MODEL, jobs, processing_queue, play_queue, save_jobs, save_play_queue
-from youtube import search_youtube, download_audio
+from youtube import search_youtube_with_status, download_audio, DownloadError
 from stems import separate_stems
-from lyrics_sync import fetch_lyrics, transcribe_with_whisper
+from lyrics_sync import resolve_lyrics
 
 app = FastAPI(title="Fun Karaoke API")
 
@@ -43,8 +43,7 @@ class ProcessRequest(BaseModel):
 
 @app.get("/search")
 async def search(q: str, max_results: int = 10, search_type: str = "all"):
-    results = search_youtube(q, max_results, search_type)
-    return {"results": results}
+    return search_youtube_with_status(q, max_results, search_type)
 
 
 @app.get("/track/{video_id}/exists")
@@ -124,17 +123,50 @@ async def process(req: ProcessRequest, background_tasks: BackgroundTasks):
 async def get_processing_queue():
     """Get all jobs that are not yet ready (processing queue)"""
     processing = []
-    for jid in config.processing_queue:
+    seen = set()
+
+    active_job_ids = []
+    if config.processing_job_id:
+        active_job_ids.append(config.processing_job_id)
+    active_job_ids.extend(config.processing_queue)
+
+    for jid in active_job_ids:
         job = jobs.get(jid)
-        if job and job.get("status") != "ready":
+        if job and job.get("status") != "ready" and jid not in seen:
             processing.append(job)
-    
-    current = jobs.get(config.processing_job_id) if config.processing_job_id else None
-    if current and current.get("status") != "ready":
-        if current not in processing:
-            processing.insert(0, current)
-    
+            seen.add(jid)
+
+    for jid, job in jobs.items():
+        if job.get("status") != "ready" and jid not in seen:
+            processing.append(job)
+
     return {"processing": processing}
+
+@app.delete("/processing-queue/errors")
+async def clear_failed_processing_jobs():
+    """Remove failed jobs from persisted processing state."""
+    failed_job_ids = [
+        job_id
+        for job_id, job in list(jobs.items())
+        if job.get("status") == "error"
+    ]
+
+    for job_id in failed_job_ids:
+        jobs.pop(job_id, None)
+
+    config.processing_queue[:] = [
+        job_id
+        for job_id in config.processing_queue
+        if job_id not in failed_job_ids
+    ]
+
+    if config.processing_job_id in failed_job_ids:
+        config.processing_job_id = None
+
+    if failed_job_ids:
+        save_jobs()
+
+    return {"success": True, "removed": len(failed_job_ids)}
 
 
 @app.get("/queue")
@@ -275,6 +307,18 @@ def _start_next_queue_job():
             break
 
 
+def _set_job_error(job_id: str, code: str, message: str, detail: Optional[str] = None):
+    jobs[job_id]["status"] = "error"
+    jobs[job_id]["error"] = message
+    jobs[job_id]["errorCode"] = code
+    jobs[job_id]["errorMessage"] = message
+    if detail:
+        jobs[job_id]["errorDetail"] = detail
+    else:
+        jobs[job_id].pop("errorDetail", None)
+    save_jobs()
+
+
 def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: str, save: bool):
     try:
         jobs[job_id]["status"] = "downloading"
@@ -317,20 +361,20 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
 
         jobs[job_id]["status"] = "fetching_lyrics"
         save_jobs()  # Save job status
-        lyrics = asyncio.run(fetch_lyrics(title, artist))
-        if not lyrics:
-            vocals_path = track_dir / "vocals.wav"
-            if vocals_path.exists():
-                lyrics = transcribe_with_whisper(vocals_path, model_size=WHISPER_MODEL)
-            else:
-                lyrics = []
+        vocals_path = track_dir / "vocals.wav"
+        lyrics_result = asyncio.run(resolve_lyrics(title, artist, vocals_path, model_size=WHISPER_MODEL))
+        if lyrics_result.get("lyricsWarning"):
+            jobs[job_id]["lyricsWarning"] = lyrics_result["lyricsWarning"]
+            save_jobs()
 
         meta = {
             "videoId": video_id,
             "title": title,
             "artist": artist,
             "status": "ready",
-            "lyrics": lyrics,
+            "lyrics": lyrics_result["lyrics"],
+            "lyricsSource": lyrics_result["lyricsSource"],
+            "lyricsStatus": lyrics_result["lyricsStatus"],
             "mode": mode,
             "saved": save,
             "full_audio_path": str(DOWNLOADS_DIR / f"{video_id}.wav"),
@@ -341,10 +385,24 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
 
         jobs[job_id]["status"] = "ready"
         save_jobs()  # Save job status
+    except DownloadError as e:
+        _set_job_error(job_id, e.code, e.message, e.detail)
     except Exception as e:
-        jobs[job_id]["status"] = "error"
-        jobs[job_id]["error"] = str(e)
-        save_jobs()  # Save error status
+        current_status = jobs[job_id].get("status")
+        if current_status == "separating":
+            _set_job_error(
+                job_id,
+                "stems_failed",
+                "Could not separate vocals and instrumental stems for this track.",
+                str(e),
+            )
+        else:
+            _set_job_error(
+                job_id,
+                "processing_failed",
+                "Processing failed. Try another video or retry this track.",
+                str(e),
+            )
     finally:
         _start_next_queue_job()
 

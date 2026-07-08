@@ -81,6 +81,10 @@ export default function KaraokePage({
     return -1
   }, [currentTime, track?.lyrics])
 
+  const nextQueueItem = useMemo(() => {
+    return queue.find((item) => item.videoId !== videoId) || null
+  }, [queue, videoId])
+
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [activeIndex])
@@ -96,6 +100,10 @@ export default function KaraokePage({
 
   const handlePlayFromQueue = (vid: string) => {
     window.location.href = `/karaoke/${vid}?mode=karaoke`
+  }
+
+  const handleRetry = () => {
+    playTrack(videoId, playbackMode)
   }
 
   const handleSeekStart = () => {
@@ -215,17 +223,40 @@ export default function KaraokePage({
                 <p className="text-zinc-400 text-sm">Loading lyrics...</p>
               </div>
             ) : error ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3">
-                <p className="text-zinc-400 text-sm">{error}</p>
-                <Link
-                  href="/"
-                  className="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-950"
-                >
-                  Back to search
-                </Link>
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+                <p className="text-zinc-300 text-sm font-medium">{error}</p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    onClick={handleRetry}
+                    className="rounded-lg bg-fuchsia-500 px-4 py-2 text-sm font-medium text-white hover:bg-fuchsia-400"
+                  >
+                    Try again
+                  </button>
+                  {nextQueueItem && (
+                    <button
+                      onClick={() => handlePlayFromQueue(nextQueueItem.videoId)}
+                      className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-zinc-700"
+                    >
+                      Play next song
+                    </button>
+                  )}
+                  <Link
+                    href="/"
+                    className="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-zinc-200"
+                  >
+                    Back to home
+                  </Link>
+                </div>
               </div>
             ) : !track || track.lyrics.length === 0 ? (
-              <p className="text-zinc-500 text-sm">No lyrics generated.</p>
+              <div className="flex flex-col items-center justify-center h-full text-center px-6">
+                <p className="text-zinc-300 text-sm font-medium">
+                  Lyrics are unavailable for this track, but playback is ready.
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  You can still sing using karaoke or full mode.
+                </p>
+              </div>
             ) : (
               track.lyrics.map((line, index) => {
                 const active = index === activeIndex

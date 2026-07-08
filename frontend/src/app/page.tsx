@@ -16,6 +16,7 @@ import SearchResults from '@/components/home/SearchResults'
 import QueuePanel from '@/components/home/QueuePanel'
 import LibraryPanel from '@/components/home/LibraryPanel'
 import ThemeToggle from '@/components/shared/ThemeToggle'
+import PageContainer from '@/components/shared/PageContainer'
 
 interface SearchResult {
   videoId: string
@@ -35,6 +36,8 @@ export default function Home() {
   const [searchType, setSearchType] = useState('all')
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
+  const [hasSearched, setHasSearched] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [downloadedSongs, setDownloadedSongs] = useState<DownloadedSong[]>([])
   const [playQueue, setPlayQueue] = useState<DownloadedSong[]>([])
   const [existingMap, setExistingMap] = useState<
@@ -73,6 +76,8 @@ export default function Home() {
     e.preventDefault()
     if (!query.trim()) return
     setLoading(true)
+    setSearchError(null)
+    setHasSearched(true)
     try {
       const data = await searchYouTube(query, 10, searchType)
       const items: SearchResult[] = data.results || []
@@ -91,7 +96,11 @@ export default function Home() {
       )
       setExistingMap(map)
     } catch (err) {
-      error('Search failed: ' + (err instanceof Error ? err.message : 'Unknown error'))
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      setResults([])
+      setExistingMap({})
+      setSearchError(message)
+      error('Search failed: ' + message)
     } finally {
       setLoading(false)
     }
@@ -139,7 +148,7 @@ export default function Home() {
       await removeFromQueue(videoId)
       setPlayQueue((prev) => prev.filter((q) => q.videoId !== videoId))
       success('Removed from queue')
-    } catch (err) {
+    } catch {
       error('Failed to remove from queue')
     }
   }
@@ -158,69 +167,74 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
-      {/* Subtle background gradient */}
-      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(217,70,239,0.06),transparent)] dark:bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(217,70,239,0.08),transparent)]" />
+    <PageContainer>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-3xl sm:text-4xl font-black text-zinc-900 dark:text-zinc-100 tracking-tight">
+            Fun{' '}
+            <span className="bg-gradient-to-r from-fuchsia-500 to-fuchsia-400 bg-clip-text text-transparent">
+              Karaoke
+            </span>
+          </h1>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
+            Search, process, and sing your heart out
+          </p>
+        </div>
+        <ThemeToggle />
+      </div>
 
-      <div className="relative max-w-3xl mx-auto px-4 py-6 sm:px-6">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-3xl sm:text-4xl font-black text-zinc-900 dark:text-zinc-100 tracking-tight">
-              Fun{' '}
-              <span className="bg-gradient-to-r from-fuchsia-500 to-fuchsia-400 bg-clip-text text-transparent">
-                Karaoke
-              </span>
-            </h1>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
-              Search, process, and sing your heart out
-            </p>
-          </div>
-          <ThemeToggle />
+      {/* Search Form */}
+      <SearchForm
+        query={query}
+        searchType={searchType}
+        loading={loading}
+        onQueryChange={setQuery}
+        onSearchTypeChange={setSearchType}
+        onSubmit={handleSearch}
+      />
+
+      {/* Two-column layout: Search Results left, Queue + Library right */}
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Left: Search Results */}
+        <div className="flex-1 lg:flex-[3] min-w-0">
+          <SearchResults
+            results={results}
+            existingMap={existingMap}
+            playQueue={playQueue}
+            onProcess={handleProcess}
+            onPlay={navigateToKaraoke}
+            onAddToQueue={handleAddToQueue}
+            loading={loading}
+            hasSearched={hasSearched}
+            errorMessage={searchError}
+          />
         </div>
 
-        {/* Search Form */}
-        <SearchForm
-          query={query}
-          searchType={searchType}
-          loading={loading}
-          onQueryChange={setQuery}
-          onSearchTypeChange={setSearchType}
-          onSubmit={handleSearch}
-        />
+        {/* Right: Queue + Downloaded Songs stacked, sticky */}
+        <div className="lg:flex-[2] lg:max-w-md xl:max-w-lg">
+          <div className="lg:sticky lg:top-6 space-y-6">
+            <QueuePanel
+              queue={playQueue}
+              nowPlayingVideoId={null}
+              onPlay={navigateToKaraoke}
+              onRemove={handleRemoveFromQueue}
+              onPlayAll={
+                playQueue.length > 0
+                  ? () => navigateToKaraoke(playQueue[0].videoId)
+                  : undefined
+              }
+            />
 
-        {/* Play Queue */}
-        <QueuePanel
-          queue={playQueue}
-          nowPlayingVideoId={null}
-          onPlay={navigateToKaraoke}
-          onRemove={handleRemoveFromQueue}
-          onPlayAll={
-            playQueue.length > 0
-              ? () => navigateToKaraoke(playQueue[0].videoId)
-              : undefined
-          }
-        />
-
-        {/* Downloaded Songs */}
-        <LibraryPanel
-          songs={downloadedSongs}
-          playQueue={playQueue}
-          onPlay={navigateToKaraoke}
-          onAddToQueue={handleLibraryAddToQueue}
-        />
-
-        {/* Search Results */}
-        <SearchResults
-          results={results}
-          existingMap={existingMap}
-          playQueue={playQueue}
-          onProcess={handleProcess}
-          onPlay={navigateToKaraoke}
-          onAddToQueue={handleAddToQueue}
-          loading={loading}
-        />
+            <LibraryPanel
+              songs={downloadedSongs}
+              playQueue={playQueue}
+              onPlay={navigateToKaraoke}
+              onAddToQueue={handleLibraryAddToQueue}
+            />
+          </div>
+        </div>
       </div>
-    </div>
+    </PageContainer>
   )
 }

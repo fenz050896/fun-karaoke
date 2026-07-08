@@ -1,6 +1,6 @@
 'use client'
 
-import { motion, AnimatePresence } from 'framer-motion'
+import { AnimatePresence } from 'framer-motion'
 import SearchResultItem from './SearchResultItem'
 import EmptyState from '@/components/shared/EmptyState'
 import { SkeletonList } from '@/components/shared/Skeleton'
@@ -20,6 +20,8 @@ interface SearchResultsProps {
   onPlay: (videoId: string) => void
   onAddToQueue: (item: SearchResult) => void
   loading?: boolean
+  hasSearched?: boolean
+  errorMessage?: string | null
 }
 
 export default function SearchResults({
@@ -30,6 +32,8 @@ export default function SearchResults({
   onPlay,
   onAddToQueue,
   loading = false,
+  hasSearched = false,
+  errorMessage = null,
 }: SearchResultsProps) {
   if (loading) {
     return (
@@ -38,6 +42,28 @@ export default function SearchResults({
           Searching...
         </h2>
         <SkeletonList count={4} />
+      </div>
+    )
+  }
+
+  if (errorMessage) {
+    return (
+      <div className="mt-6 rounded-2xl border border-red-500/20 bg-red-500/5">
+        <EmptyState
+          title="Search failed"
+          description={errorMessage}
+        />
+      </div>
+    )
+  }
+
+  if (hasSearched && results.length === 0) {
+    return (
+      <div className="mt-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60">
+        <EmptyState
+          title="No results found"
+          description="Try a different song title, artist, or search type."
+        />
       </div>
     )
   }
@@ -57,7 +83,7 @@ export default function SearchResults({
 
       <div className="space-y-2">
         <AnimatePresence mode="popLayout">
-          {results.map((item) => {
+          {results.map((item, index) => {
             const existing = existingMap[item.videoId]
             const isDownloaded = existing?.exists && existing.status === 'ready'
             const isInQueue = playQueue.some(
@@ -73,7 +99,7 @@ export default function SearchResults({
                 onProcess={onProcess}
                 onPlay={onPlay}
                 onAddToQueue={onAddToQueue}
-                index={Math.min(results.indexOf(item), 9)}
+                index={Math.min(index, 9)}
               />
             )
           })}

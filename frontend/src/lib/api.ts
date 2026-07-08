@@ -1,20 +1,78 @@
-const API_BASE = typeof window !== 'undefined' 
+type ApiErrorPayload = {
+  code: string
+  message: string
+  detail?: string
+}
+
+export type SearchResponse = {
+  ok?: boolean
+  results: Array<{
+    videoId: string
+    title: string
+    artist: string
+    duration: number
+  }>
+  error?: ApiErrorPayload | null
+}
+
+export class ApiClientError extends Error {
+  code?: string
+  detail?: string
+
+  constructor(message: string, code?: string, detail?: string) {
+    super(message)
+    this.name = 'ApiClientError'
+    this.code = code
+    this.detail = detail
+  }
+}
+
+const API_BASE = typeof window !== 'undefined'
   ? (process.env.NEXT_PUBLIC_API_URL || "/api")
   : "http://backend:8000";
 
-export async function searchYouTube(query: string, maxResults: number = 10, searchType: string = "all") {
+async function readJsonError(res: Response, fallback: string) {
+  try {
+    const data = await res.json()
+    const payload = data?.error
+    if (payload?.message) {
+      return new ApiClientError(payload.message, payload.code, payload.detail)
+    }
+    if (data?.detail) {
+      return new ApiClientError(String(data.detail))
+    }
+  } catch {
+    return new ApiClientError(fallback)
+  }
+  return new ApiClientError(fallback)
+}
+
+export async function searchYouTube(query: string, maxResults: number = 10, searchType: string = "all"): Promise<SearchResponse> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
-  
+
   try {
     const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}&max_results=${maxResults}&search_type=${searchType}`, {
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
-    if (!res.ok) throw new Error("Search failed");
-    return res.json();
+    if (!res.ok) throw await readJsonError(res, "Search failed");
+
+    const data = await res.json()
+    if (data?.ok === false && data?.error?.message) {
+      throw new ApiClientError(data.error.message, data.error.code, data.error.detail)
+    }
+
+    return {
+      ok: data?.ok ?? true,
+      results: data?.results || [],
+      error: data?.error ?? null,
+    }
   } catch (error) {
     clearTimeout(timeoutId);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiClientError('Search timed out. Try again.', 'request_timeout')
+    }
     throw error;
   }
 }
@@ -52,6 +110,14 @@ export async function getQueue() {
 export async function getProcessingQueue() {
   const res = await fetch(`${API_BASE}/processing-queue`);
   if (!res.ok) throw new Error("Processing queue fetch failed");
+  return res.json();
+}
+
+export async function clearFailedProcessingJobs() {
+  const res = await fetch(`${API_BASE}/processing-queue/errors`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to clear failed jobs");
   return res.json();
 }
 
