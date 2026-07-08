@@ -32,6 +32,10 @@ function getStoredTheme(): Theme {
   return (localStorage.getItem('theme') as Theme) || 'system'
 }
 
+function applyDocumentTheme(resolved: ResolvedTheme) {
+  document.documentElement.classList.toggle('dark', resolved === 'dark')
+}
+
 export function useTheme() {
   const ctx = useContext(ThemeContext)
   if (!ctx) throw new Error('useTheme must be used within ThemeProvider')
@@ -47,7 +51,7 @@ export default function ThemeProvider({ children }: { children: ReactNode }) {
   const apply = useCallback((t: Theme) => {
     const r = resolveTheme(t)
     setResolved(r)
-    document.documentElement.classList.toggle('dark', r === 'dark')
+    applyDocumentTheme(r)
   }, [])
 
   const setTheme = useCallback(
@@ -65,15 +69,17 @@ export default function ThemeProvider({ children }: { children: ReactNode }) {
 
   // Apply on mount + listen for system changes
   useEffect(() => {
-    apply(theme)
+    applyDocumentTheme(resolved)
 
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const handler = () => {
-      if (theme === 'system') apply('system')
+      if (theme === 'system') {
+        setResolved(resolveTheme('system'))
+      }
     }
     mq.addEventListener('change', handler)
     return () => mq.removeEventListener('change', handler)
-  }, [theme, apply])
+  }, [theme, resolved])
 
   return (
     <ThemeContext.Provider value={{ theme, resolved, setTheme, toggleTheme }}>

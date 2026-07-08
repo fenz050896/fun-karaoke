@@ -33,7 +33,7 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <nav className="bg-zinc-900 border-b border-zinc-800 px-4 py-3 sticky top-0 z-50">
-          <div className="max-w-4xl mx-auto flex justify-between items-center">
+          <div className="max-w-7xl mx-auto flex justify-between items-center px-4 sm:px-6 lg:px-8">
             <Link href="/" className="text-xl font-bold text-zinc-100">
               Fun Karaoke
             </Link>
