@@ -1,8 +1,9 @@
-import subprocess
 import json
+import logging
+import shutil
+import subprocess
 from pathlib import Path
 from typing import List, Dict
-import logging
 
 from errors import AppError, error_payload, truncate_detail
 
@@ -81,6 +82,22 @@ def _classify_search_failure(
         "YouTube search failed. Try again.",
         stderr,
     )
+
+
+def _yt_dlp_js_runtime_args() -> List[str]:
+    deno_path = shutil.which("deno")
+    if deno_path:
+        return ["--js-runtimes", f"deno:{deno_path}", "--remote-components", "ejs:github"]
+    return []
+
+
+def _download_error_message(detail: str) -> str:
+    lower_detail = (detail or "").lower()
+    if "sign in" in lower_detail or "not a bot" in lower_detail or "cookies" in lower_detail:
+        return "YouTube blocked the download. Export fresh YouTube cookies and try again."
+    if "no supported javascript runtime" in lower_detail or "js runtime" in lower_detail:
+        return "YouTube download needs the Deno JavaScript runtime in the backend container."
+    return "Could not download audio from YouTube. Check cookies or try another video."
 
 
 def search_youtube_with_status(query: str, max_results: int = 10, search_type: str = "all") -> Dict:
@@ -174,12 +191,9 @@ def download_audio(video_id: str, output_dir: Path) -> Path:
 
     # Add cookies and JS runtime for download if available
     if COOKIES_FILE.exists():
-        cmd.extend([
-            "--cookies", str(COOKIES_FILE),
-            "--js-runtimes", "node",
-            "--remote-components", "ejs:github"
-        ])
-        logger.info(f"Downloading {video_id} with cookies and node runtime")
+        cmd.extend(["--cookies", str(COOKIES_FILE)])
+        cmd.extend(_yt_dlp_js_runtime_args())
+        logger.info(f"Downloading {video_id} with cookies")
     else:
         logger.warning(f"Downloading {video_id} without cookies - may fail")
 
@@ -189,14 +203,15 @@ def download_audio(video_id: str, output_dir: Path) -> Path:
         detail = e.stderr or e.stdout or str(e)
         raise DownloadError(
             code="download_failed",
-            message="Could not download audio from YouTube. Check cookies or try another video.",
+            message=_download_error_message(detail),
             detail=truncate_detail(detail),
         ) from e
     except Exception as e:
+        detail = str(e)
         raise DownloadError(
             code="download_failed",
-            message="Could not download audio from YouTube. Check cookies or try another video.",
-            detail=str(e),
+            message=_download_error_message(detail),
+            detail=detail,
         ) from e
 
     expected = output_dir / f"{video_id}.wav"
