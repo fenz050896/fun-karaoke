@@ -1,7 +1,63 @@
+import asyncio
 import re
-import json
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
+
+
+LRCLIB_BASE_URL = "https://lrclib.net/api"
+DURATION_TOLERANCE_SECONDS = 10.0
+RETRY_DELAYS_SECONDS = (0.5, 1.0)
+PRESENTATION_LABEL_RE = re.compile(
+    r"\s*[\[(](official music video|official audio|lyrics)[\])]\s*$",
+    re.IGNORECASE,
+)
+TOPIC_SUFFIX_RE = re.compile(r"\s+-\s+topic\s*$", re.IGNORECASE)
+
+
+class LyricsNotFound(Exception):
+    pass
+
+
+class LyricsProviderUnavailable(Exception):
+    pass
+
+
+class _LRCLibNotFound(Exception):
+    pass
+
+
+class _TemporaryLRCLibError(Exception):
+    pass
+
+
+def _collapse_whitespace(value: str) -> str:
+    return " ".join((value or "").strip().split())
+
+
+def _comparison_key(value: str) -> str:
+    return _collapse_whitespace(value).casefold()
+
+
+def normalize_artist(artist: str) -> str:
+    return _collapse_whitespace(TOPIC_SUFFIX_RE.sub("", artist or ""))
+
+
+def normalize_title(title: str, artist: str) -> str:
+    cleaned = _collapse_whitespace(title)
+    cleaned_artist = normalize_artist(artist)
+
+    while PRESENTATION_LABEL_RE.search(cleaned):
+        cleaned = PRESENTATION_LABEL_RE.sub("", cleaned).strip()
+
+    for separator in (" - ", " – ", " — "):
+        if separator not in cleaned:
+            continue
+        prefix, remainder = cleaned.split(separator, 1)
+        if _comparison_key(prefix) == _comparison_key(cleaned_artist):
+            cleaned = remainder.strip()
+            break
+
+    return _collapse_whitespace(cleaned)
 
 
 def parse_lrc(lrc_text: str) -> List[Dict]:
@@ -20,6 +76,79 @@ def parse_lrc(lrc_text: str) -> List[Dict]:
                     "text": text,
                 })
     return lines
+
+
+def _candidate_result(
+    item: Dict,
+    requested_title: str,
+    requested_artist: str,
+    audio_duration: float,
+    strategy: str,
+) -> Optional[Dict]:
+    track_name = str(item.get("trackName") or "")
+    artist_name = str(item.get("artistName") or "")
+    synced = item.get("syncedLyrics")
+
+    if not synced:
+        return None
+
+    candidate_title = normalize_title(track_name, artist_name)
+    candidate_artist = normalize_artist(artist_name)
+    if _comparison_key(candidate_title) != _comparison_key(requested_title):
+        return None
+    if _comparison_key(candidate_artist) != _comparison_key(requested_artist):
+        return None
+
+    try:
+        candidate_duration = float(item.get("duration"))
+    except (TypeError, ValueError):
+        return None
+
+    duration_delta = abs(candidate_duration - audio_duration)
+    if duration_delta > DURATION_TOLERANCE_SECONDS:
+        return None
+
+    lyrics = parse_lrc(str(synced))
+    if not lyrics:
+        return None
+
+    return {
+        "lyrics": lyrics,
+        "lyricsSource": "lrclib",
+        "lyricsStatus": "synced",
+        "lyricsMatch": {
+            "id": item.get("id"),
+            "strategy": strategy,
+            "trackName": track_name,
+            "artistName": artist_name,
+            "duration": candidate_duration,
+            "durationDelta": round(duration_delta, 3),
+        },
+    }
+
+
+def _select_search_result(
+    items: List[Dict],
+    requested_title: str,
+    requested_artist: str,
+    audio_duration: float,
+) -> Optional[Dict]:
+    matches = []
+    for index, item in enumerate(items):
+        result = _candidate_result(
+            item,
+            requested_title=requested_title,
+            requested_artist=requested_artist,
+            audio_duration=audio_duration,
+            strategy="search",
+        )
+        if result:
+            matches.append((result["lyricsMatch"]["durationDelta"], index, result))
+
+    if not matches:
+        return None
+
+    return min(matches, key=lambda match: (match[0], match[1]))[2]
 
 
 async def fetch_lyrics(title: str, artist: str, album: str = "", duration: int = 0) -> Optional[List[Dict]]:

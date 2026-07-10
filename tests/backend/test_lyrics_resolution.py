@@ -3,7 +3,78 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from lyrics_sync import resolve_lyrics
+from lyrics_sync import (
+    _select_search_result,
+    normalize_artist,
+    normalize_title,
+    parse_lrc,
+    resolve_lyrics,
+)
+
+
+class LyricsMetadataTests(unittest.TestCase):
+    def test_normalize_title_removes_matching_artist_prefix_and_label(self):
+        title = normalize_title(
+            "Hindia - everything u are (Official Music Video)",
+            "Hindia - Topic",
+        )
+
+        self.assertEqual(title, "everything u are")
+        self.assertEqual(normalize_artist("Hindia - Topic"), "Hindia")
+
+    def test_normalize_title_preserves_meaningful_parenthetical_text(self):
+        title = normalize_title("Song (Acoustic Version)", "Artist")
+
+        self.assertEqual(title, "Song (Acoustic Version)")
+
+    def test_parse_lrc_ignores_malformed_or_empty_lines(self):
+        lyrics = parse_lrc("[00:01.00]\nnot lrc\n[00:02.50]Hello")
+
+        self.assertEqual(lyrics, [{"start": 2.5, "text": "Hello"}])
+
+    def test_search_selection_rejects_mismatches_and_uses_closest_duration(self):
+        items = [
+            {
+                "id": 1,
+                "trackName": "everything u are",
+                "artistName": "Hindia",
+                "duration": 349.0,
+                "syncedLyrics": "[00:01.00]Wrong version",
+            },
+            {
+                "id": 2,
+                "trackName": "another song",
+                "artistName": "Hindia",
+                "duration": 237.0,
+                "syncedLyrics": "[00:01.00]Wrong title",
+            },
+            {
+                "id": 3,
+                "trackName": "everything u are",
+                "artistName": "Hindia",
+                "duration": 236.0,
+                "syncedLyrics": "[00:12.01]Closest",
+            },
+            {
+                "id": 4,
+                "trackName": "Hindia - everything u are",
+                "artistName": "Hindia",
+                "duration": 234.0,
+                "syncedLyrics": "[00:12.01]Farther",
+            },
+        ]
+
+        result = _select_search_result(
+            items,
+            requested_title="everything u are",
+            requested_artist="Hindia",
+            audio_duration=237.0,
+        )
+
+        self.assertEqual(result["lyrics"], [{"start": 12.01, "text": "Closest"}])
+        self.assertEqual(result["lyricsMatch"]["id"], 3)
+        self.assertEqual(result["lyricsMatch"]["strategy"], "search")
+        self.assertEqual(result["lyricsMatch"]["durationDelta"], 1.0)
 
 
 class LyricsResolutionTests(unittest.IsolatedAsyncioTestCase):
