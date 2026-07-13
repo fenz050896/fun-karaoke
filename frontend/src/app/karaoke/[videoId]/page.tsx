@@ -3,7 +3,7 @@
 import { use, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { getQueue, removeFromQueue } from '@/lib/api'
+import { getQueue, refreshLyrics, removeFromQueue } from '@/lib/api'
 import { useAudio } from '@/lib/audio-context'
 
 type QueueItem = {
@@ -31,6 +31,7 @@ export default function KaraokePage({
     loading,
     error,
     playTrack,
+    reloadTrackMetadata,
     setMode,
     togglePlay,
     seek,
@@ -39,6 +40,9 @@ export default function KaraokePage({
   const activeRef = useRef<HTMLDivElement | null>(null)
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [seekValue, setSeekValue] = useState(0)
+  const [refreshingLyrics, setRefreshingLyrics] = useState(false)
+  const [lyricsRefreshMessage, setLyricsRefreshMessage] = useState<string | null>(null)
+  const [lyricsRefreshError, setLyricsRefreshError] = useState<string | null>(null)
   const seekingRef = useRef(false)
 
   // Play track on mount if different from currently playing
@@ -85,6 +89,9 @@ export default function KaraokePage({
     return queue.find((item) => item.videoId !== videoId) || null
   }, [queue, videoId])
 
+  const canRefreshLyrics = track?.lyricsSource === 'whisper'
+    || track?.lyricsSource === 'none'
+
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [activeIndex])
@@ -104,6 +111,24 @@ export default function KaraokePage({
 
   const handleRetry = () => {
     playTrack(videoId, playbackMode)
+  }
+
+  const handleRefreshLyrics = async () => {
+    setRefreshingLyrics(true)
+    setLyricsRefreshMessage(null)
+    setLyricsRefreshError(null)
+
+    try {
+      await refreshLyrics(videoId)
+      await reloadTrackMetadata(videoId)
+      setLyricsRefreshMessage('Synced lyrics loaded from LRCLIB.')
+    } catch (err) {
+      setLyricsRefreshError(
+        err instanceof Error ? err.message : 'Lyrics could not be refreshed.'
+      )
+    } finally {
+      setRefreshingLyrics(false)
+    }
   }
 
   const handleSeekStart = () => {
@@ -211,10 +236,37 @@ export default function KaraokePage({
       <div className="flex-1 grid gap-0 md:grid-cols-[1fr_320px] min-h-0">
         {/* Lyrics — with visible container */}
         <div className="flex flex-col min-h-0 m-3 mr-0 rounded-2xl border border-zinc-900 bg-zinc-950/70 overflow-hidden">
-          <div className="shrink-0 flex items-center justify-between px-5 pt-3 pb-2">
-            <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Lyrics</h2>
-            <p className="text-xs text-zinc-600">{track?.lyrics.length ?? 0} lines</p>
+          <div className="shrink-0 flex items-center justify-between gap-3 px-5 pt-3 pb-2">
+            <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">
+              Lyrics
+            </h2>
+            <div className="flex items-center gap-3">
+              <p className="text-xs text-zinc-600">{track?.lyrics.length ?? 0} lines</p>
+              {canRefreshLyrics && (
+                <button
+                  type="button"
+                  onClick={handleRefreshLyrics}
+                  disabled={refreshingLyrics}
+                  className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:border-fuchsia-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {refreshingLyrics ? 'Refreshing...' : 'Refresh lyrics'}
+                </button>
+              )}
+            </div>
           </div>
+
+          {(lyricsRefreshError || lyricsRefreshMessage) && (
+            <div
+              className={[
+                'mx-5 mb-2 rounded-lg border px-3 py-2 text-xs',
+                lyricsRefreshError
+                  ? 'border-red-500/40 bg-red-500/10 text-red-200'
+                  : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200',
+              ].join(' ')}
+            >
+              {lyricsRefreshError || lyricsRefreshMessage}
+            </div>
+          )}
 
           <div className="flex-1 space-y-2 overflow-y-auto px-5 pb-4 min-h-0">
             {loading ? (
