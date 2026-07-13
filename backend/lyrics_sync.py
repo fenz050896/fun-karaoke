@@ -270,26 +270,6 @@ async def resolve_lrclib_lyrics(
     raise LyricsNotFound("No valid LRCLIB match")
 
 
-async def fetch_lyrics(title: str, artist: str, album: str = "", duration: int = 0) -> Optional[List[Dict]]:
-    """Fetch synced lyrics from LRCLIB. Returns parsed lyrics or None."""
-    import httpx
-
-    url = "https://lrclib.net/api/search"
-    params = {"q": f"{title} {artist}"}
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    if not data:
-        return None
-    # pick best match
-    for item in data:
-        synced = item.get("syncedLyrics")
-        if synced:
-            return parse_lrc(synced)
-    return None
-
-
 def transcribe_with_whisper(audio_path: Path, model_size: str = "base") -> List[Dict]:
     """Transcribe vocals with faster-whisper and return lyrics-like segments."""
     from faster_whisper import WhisperModel
@@ -304,36 +284,45 @@ def transcribe_with_whisper(audio_path: Path, model_size: str = "base") -> List[
     return lines
 
 
-async def resolve_lyrics(title: str, artist: str, vocals_path: Path, model_size: str = "base") -> Dict:
-    """Resolve lyrics with LRCLIB first, then Whisper, then an explicit unavailable state."""
+async def resolve_lyrics(
+    title: str,
+    artist: str,
+    audio_duration: float,
+    vocals_path: Path,
+    model_size: str = "base",
+) -> Dict:
+    """Resolve LRCLIB first, then Whisper, then an unavailable state."""
     warning = None
 
     try:
-        synced_lyrics = await fetch_lyrics(title, artist)
-    except Exception as e:
-        warning = str(e)
-        synced_lyrics = None
-
-    if synced_lyrics:
-        return {
-            "lyrics": synced_lyrics,
-            "lyricsSource": "lrclib",
-            "lyricsStatus": "synced",
-        }
+        return await resolve_lrclib_lyrics(title, artist, audio_duration)
+    except (LyricsNotFound, LyricsProviderUnavailable) as error:
+        warning = str(error)
 
     if vocals_path.exists():
         try:
-            generated_lyrics = transcribe_with_whisper(vocals_path, model_size=model_size)
-        except Exception as e:
-            warning = str(e)
+            generated_lyrics = transcribe_with_whisper(
+                vocals_path,
+                model_size=model_size,
+            )
+        except Exception as error:
+            whisper_warning = f"Whisper failed: {error}"
+            warning = (
+                f"{warning}; {whisper_warning}"
+                if warning
+                else whisper_warning
+            )
             generated_lyrics = []
 
         if generated_lyrics:
-            return {
+            result = {
                 "lyrics": generated_lyrics,
                 "lyricsSource": "whisper",
                 "lyricsStatus": "generated",
             }
+            if warning:
+                result["lyricsWarning"] = warning
+            return result
 
     result = {
         "lyrics": [],

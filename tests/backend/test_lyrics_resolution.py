@@ -214,46 +214,128 @@ class LRCLibProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LyricsResolutionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lrclib_lyrics_win(self):
-        synced = [{"start": 1.0, "text": "hello"}]
-        with patch("lyrics_sync.fetch_lyrics", new=AsyncMock(return_value=synced)):
-            result = await resolve_lyrics("Song", "Artist", Path("missing.wav"), "small")
+    async def test_lrclib_lyrics_win_without_whisper(self):
+        synced = {
+            "lyrics": [{"start": 1.0, "text": "hello"}],
+            "lyricsSource": "lrclib",
+            "lyricsStatus": "synced",
+            "lyricsMatch": {
+                "id": 1,
+                "strategy": "exact",
+                "trackName": "Song",
+                "artistName": "Artist",
+                "duration": 180.0,
+                "durationDelta": 0.0,
+            },
+        }
 
-        self.assertEqual(result["lyrics"], synced)
-        self.assertEqual(result["lyricsSource"], "lrclib")
-        self.assertEqual(result["lyricsStatus"], "synced")
-        self.assertNotIn("lyricsWarning", result)
+        with patch(
+            "lyrics_sync.resolve_lrclib_lyrics",
+            new=AsyncMock(return_value=synced),
+        ):
+            with patch("lyrics_sync.transcribe_with_whisper") as whisper:
+                result = await resolve_lyrics(
+                    "Song",
+                    "Artist",
+                    180.0,
+                    Path("missing.wav"),
+                    "small",
+                )
 
-    async def test_whisper_used_when_lrclib_empty(self):
+        self.assertEqual(result, synced)
+        whisper.assert_not_called()
+
+    async def test_whisper_used_when_lrclib_has_no_valid_match(self):
         generated = [{"start": 2.0, "text": "generated"}]
         with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
-            with patch("lyrics_sync.fetch_lyrics", new=AsyncMock(return_value=None)):
-                with patch("lyrics_sync.transcribe_with_whisper", return_value=generated):
-                    result = await resolve_lyrics("Song", "Artist", Path(audio.name), "small")
+            with patch(
+                "lyrics_sync.resolve_lrclib_lyrics",
+                new=AsyncMock(side_effect=LyricsNotFound("No valid LRCLIB match")),
+            ):
+                with patch(
+                    "lyrics_sync.transcribe_with_whisper",
+                    return_value=generated,
+                ):
+                    result = await resolve_lyrics(
+                        "Song",
+                        "Artist",
+                        180.0,
+                        Path(audio.name),
+                        "small",
+                    )
 
         self.assertEqual(result["lyrics"], generated)
         self.assertEqual(result["lyricsSource"], "whisper")
         self.assertEqual(result["lyricsStatus"], "generated")
+        self.assertEqual(result["lyricsWarning"], "No valid LRCLIB match")
 
-    async def test_unavailable_when_lrclib_fails_and_vocals_missing(self):
-        with patch("lyrics_sync.fetch_lyrics", new=AsyncMock(side_effect=RuntimeError("LRCLIB down"))):
-            result = await resolve_lyrics("Song", "Artist", Path("missing.wav"), "small")
-
-        self.assertEqual(result["lyrics"], [])
-        self.assertEqual(result["lyricsSource"], "none")
-        self.assertEqual(result["lyricsStatus"], "unavailable")
-        self.assertIn("LRCLIB down", result["lyricsWarning"])
-
-    async def test_unavailable_when_whisper_fails(self):
+    async def test_provider_warning_is_retained_when_whisper_succeeds(self):
+        generated = [{"start": 2.0, "text": "generated"}]
         with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
-            with patch("lyrics_sync.fetch_lyrics", new=AsyncMock(return_value=None)):
-                with patch("lyrics_sync.transcribe_with_whisper", side_effect=RuntimeError("Whisper failed")):
-                    result = await resolve_lyrics("Song", "Artist", Path(audio.name), "small")
+            with patch(
+                "lyrics_sync.resolve_lrclib_lyrics",
+                new=AsyncMock(side_effect=LyricsProviderUnavailable(
+                    "LRCLIB returned HTTP 503"
+                )),
+            ):
+                with patch(
+                    "lyrics_sync.transcribe_with_whisper",
+                    return_value=generated,
+                ):
+                    result = await resolve_lyrics(
+                        "Song",
+                        "Artist",
+                        180.0,
+                        Path(audio.name),
+                        "small",
+                    )
+
+        self.assertEqual(result["lyricsSource"], "whisper")
+        self.assertEqual(result["lyricsWarning"], "LRCLIB returned HTTP 503")
+
+    async def test_unavailable_when_provider_fails_and_vocals_missing(self):
+        with patch(
+            "lyrics_sync.resolve_lrclib_lyrics",
+            new=AsyncMock(side_effect=LyricsProviderUnavailable("LRCLIB down")),
+        ):
+            result = await resolve_lyrics(
+                "Song",
+                "Artist",
+                180.0,
+                Path("missing.wav"),
+                "small",
+            )
 
         self.assertEqual(result["lyrics"], [])
         self.assertEqual(result["lyricsSource"], "none")
         self.assertEqual(result["lyricsStatus"], "unavailable")
-        self.assertIn("Whisper failed", result["lyricsWarning"])
+        self.assertEqual(result["lyricsWarning"], "LRCLIB down")
+
+    async def test_unavailable_combines_lrclib_and_whisper_failures(self):
+        with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
+            with patch(
+                "lyrics_sync.resolve_lrclib_lyrics",
+                new=AsyncMock(side_effect=LyricsNotFound("No valid LRCLIB match")),
+            ):
+                with patch(
+                    "lyrics_sync.transcribe_with_whisper",
+                    side_effect=RuntimeError("Whisper failed"),
+                ):
+                    result = await resolve_lyrics(
+                        "Song",
+                        "Artist",
+                        180.0,
+                        Path(audio.name),
+                        "small",
+                    )
+
+        self.assertEqual(result["lyrics"], [])
+        self.assertEqual(result["lyricsSource"], "none")
+        self.assertEqual(result["lyricsStatus"], "unavailable")
+        self.assertEqual(
+            result["lyricsWarning"],
+            "No valid LRCLIB match; Whisper failed: Whisper failed",
+        )
 
 
 if __name__ == "__main__":
