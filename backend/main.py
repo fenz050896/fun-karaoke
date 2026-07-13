@@ -14,6 +14,7 @@ import soundfile as sf
 
 import config
 from config import DOWNLOADS_DIR, PROCESSED_DIR, DEMUCS_MODEL, WHISPER_MODEL, jobs, processing_queue, play_queue, save_jobs, save_play_queue
+from errors import error_payload
 from youtube import search_youtube_with_status, download_audio, DownloadError
 from stems import separate_stems
 from lyrics_sync import (
@@ -58,6 +59,14 @@ def _write_json_atomic(path: Path, payload: dict):
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def _lyrics_refresh_lock(video_id: str) -> asyncio.Lock:
+    lock = lyrics_refresh_locks.get(video_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        lyrics_refresh_locks[video_id] = lock
+    return lock
 
 
 @app.get("/health")
@@ -293,6 +302,77 @@ async def track(video_id: str):
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
     return meta
+
+
+@app.post("/track/{video_id}/lyrics/refresh")
+async def refresh_track_lyrics(video_id: str):
+    async with _lyrics_refresh_lock(video_id):
+        meta_path = PROCESSED_DIR / video_id / "meta.json"
+
+        if not meta_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=error_payload(
+                    "track_not_found",
+                    "Track metadata was not found.",
+                ),
+            )
+
+        with open(meta_path, "r", encoding="utf-8") as file:
+            meta = json.load(file)
+
+        configured_audio_path = meta.get("full_audio_path")
+        audio_path = (
+            Path(configured_audio_path)
+            if configured_audio_path
+            else DOWNLOADS_DIR / f"{video_id}.wav"
+        )
+        if not audio_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=error_payload(
+                    "full_audio_not_found",
+                    "Full audio was not found for this track.",
+                ),
+            )
+
+        if meta.get("status") != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail=error_payload(
+                    "track_not_ready",
+                    "Track is not ready for lyric refresh.",
+                ),
+            )
+
+        try:
+            lyrics_result = await resolve_lrclib_lyrics(
+                meta.get("title", ""),
+                meta.get("artist", ""),
+                _audio_duration(audio_path),
+            )
+        except LyricsNotFound as error:
+            raise HTTPException(
+                status_code=404,
+                detail=error_payload(
+                    "lyrics_not_found",
+                    "No matching synced lyrics were found on LRCLIB.",
+                    str(error),
+                ),
+            ) from error
+        except LyricsProviderUnavailable as error:
+            raise HTTPException(
+                status_code=503,
+                detail=error_payload(
+                    "lyrics_provider_unavailable",
+                    "LRCLIB is temporarily unavailable. Try again later.",
+                    str(error),
+                ),
+            ) from error
+
+        updated_meta = _merge_lyrics_metadata(meta, lyrics_result)
+        _write_json_atomic(meta_path, updated_meta)
+        return {"success": True, "track": updated_meta}
 
 
 @app.get("/audio/{video_id}/instrumental")
