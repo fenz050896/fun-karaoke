@@ -151,6 +151,125 @@ def _select_search_result(
     return min(matches, key=lambda match: (match[0], match[1]))[2]
 
 
+async def _retry_lrclib(operation: Callable[[], Awaitable[Dict | List]]) -> Dict | List:
+    last_error = None
+    for attempt in range(len(RETRY_DELAYS_SECONDS) + 1):
+        try:
+            return await operation()
+        except _TemporaryLRCLibError as error:
+            last_error = error
+            if attempt >= len(RETRY_DELAYS_SECONDS):
+                break
+            await asyncio.sleep(RETRY_DELAYS_SECONDS[attempt])
+
+    raise LyricsProviderUnavailable(
+        str(last_error) or "LRCLIB is temporarily unavailable"
+    )
+
+
+async def _request_lrclib(endpoint: str, params: Dict) -> Dict | List:
+    import httpx
+
+    url = f"{LRCLIB_BASE_URL}/{endpoint}"
+    async with httpx.AsyncClient() as client:
+        async def request_once():
+            try:
+                response = await client.get(url, params=params, timeout=30)
+            except httpx.TransportError as error:
+                raise _TemporaryLRCLibError(
+                    f"LRCLIB request failed: {error}"
+                ) from error
+
+            if response.status_code == 404:
+                raise _LRCLibNotFound()
+            if response.status_code == 429 or response.status_code >= 500:
+                raise _TemporaryLRCLibError(
+                    f"LRCLIB returned HTTP {response.status_code}"
+                )
+
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                raise LyricsProviderUnavailable(
+                    f"LRCLIB returned HTTP {response.status_code}"
+                ) from error
+
+            try:
+                return response.json()
+            except ValueError as error:
+                raise LyricsProviderUnavailable(
+                    "LRCLIB returned an invalid response"
+                ) from error
+
+        return await _retry_lrclib(request_once)
+
+
+async def resolve_lrclib_lyrics(
+    title: str,
+    artist: str,
+    audio_duration: float,
+) -> Dict:
+    requested_artist = normalize_artist(artist)
+    requested_title = normalize_title(title, requested_artist)
+    if not requested_title or not requested_artist:
+        raise LyricsNotFound("No valid LRCLIB match")
+
+    exact = None
+    exact_warning = None
+    try:
+        exact = await _request_lrclib(
+            "get",
+            {
+                "track_name": requested_title,
+                "artist_name": requested_artist,
+                "duration": audio_duration,
+            },
+        )
+    except _LRCLibNotFound:
+        pass
+    except LyricsProviderUnavailable as error:
+        # Structured search can still recover from an exact endpoint failure.
+        exact_warning = str(error)
+
+    if isinstance(exact, dict):
+        result = _candidate_result(
+            exact,
+            requested_title=requested_title,
+            requested_artist=requested_artist,
+            audio_duration=audio_duration,
+            strategy="exact",
+        )
+        if result:
+            return result
+
+    try:
+        search_results = await _request_lrclib(
+            "search",
+            {
+                "track_name": requested_title,
+                "artist_name": requested_artist,
+            },
+        )
+    except _LRCLibNotFound:
+        search_results = []
+
+    if not isinstance(search_results, list):
+        raise LyricsProviderUnavailable("LRCLIB search returned an invalid response")
+
+    result = _select_search_result(
+        search_results,
+        requested_title=requested_title,
+        requested_artist=requested_artist,
+        audio_duration=audio_duration,
+    )
+    if result:
+        return result
+
+    if exact_warning:
+        raise LyricsProviderUnavailable(exact_warning)
+    raise LyricsNotFound("No valid LRCLIB match")
+
+
 async def fetch_lyrics(title: str, artist: str, album: str = "", duration: int = 0) -> Optional[List[Dict]]:
     """Fetch synced lyrics from LRCLIB. Returns parsed lyrics or None."""
     import httpx
