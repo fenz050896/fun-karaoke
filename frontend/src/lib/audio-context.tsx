@@ -14,6 +14,15 @@ type Track = {
   lyrics: LyricLine[]
   lyricsSource?: 'lrclib' | 'whisper' | 'none'
   lyricsStatus?: 'synced' | 'generated' | 'unavailable'
+  lyricsWarning?: string
+  lyricsMatch?: {
+    id?: number
+    strategy: 'exact' | 'search'
+    trackName: string
+    artistName: string
+    duration: number
+    durationDelta: number
+  }
   mode?: string
   saved?: boolean
 }
@@ -30,6 +39,7 @@ interface AudioContextValue {
   loading: boolean
   error: string | null
   playTrack: (videoId: string, mode?: PlaybackMode) => void
+  reloadTrackMetadata: (videoId: string) => Promise<void>
   setMode: (mode: PlaybackMode) => void
   togglePlay: () => void
   seek: (time: number) => void
@@ -295,6 +305,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     }
   }, [ensureCtx, stopSources, createSources, startTick, fetchAudioBuffer])
 
+  const reloadTrackMetadata = useCallback(async (vid: string) => {
+    const data: Track = await getTrack(vid)
+    if (videoIdRef.current === vid) {
+      setTrack(data)
+    }
+  }, [])
+
   const setMode = useCallback((mode: PlaybackMode) => {
     if (mode === modeRef.current) return
     if (!videoIdRef.current) return
@@ -347,9 +364,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({
     videoId, track, playbackMode, isPlaying, currentTime, duration, loading, error,
-    playTrack, setMode, togglePlay, seek,
+    playTrack, reloadTrackMetadata, setMode, togglePlay, seek,
   }), [videoId, track, playbackMode, isPlaying, currentTime, duration, loading, error,
-      playTrack, setMode, togglePlay, seek])
+      playTrack, reloadTrackMetadata, setMode, togglePlay, seek])
 
   return (
     <AudioCtx.Provider value={value}>
