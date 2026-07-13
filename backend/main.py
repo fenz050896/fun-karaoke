@@ -10,14 +10,63 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import soundfile as sf
 
 import config
 from config import DOWNLOADS_DIR, PROCESSED_DIR, DEMUCS_MODEL, WHISPER_MODEL, jobs, processing_queue, play_queue, save_jobs, save_play_queue
+from errors import error_payload
 from youtube import search_youtube_with_status, download_audio, DownloadError
 from stems import separate_stems
-from lyrics_sync import resolve_lyrics
+from lyrics_sync import (
+    LyricsNotFound,
+    LyricsProviderUnavailable,
+    resolve_lrclib_lyrics,
+    resolve_lyrics,
+)
 
 app = FastAPI(title="Fun Karaoke API")
+
+LYRIC_METADATA_KEYS = (
+    "lyrics",
+    "lyricsSource",
+    "lyricsStatus",
+    "lyricsMatch",
+    "lyricsWarning",
+)
+lyrics_refresh_locks = {}
+
+
+def _audio_duration(audio_path: Path) -> float:
+    return float(sf.info(str(audio_path)).duration)
+
+
+def _merge_lyrics_metadata(meta: dict, lyrics_result: dict) -> dict:
+    merged = dict(meta)
+    for key in LYRIC_METADATA_KEYS:
+        merged.pop(key, None)
+    for key in LYRIC_METADATA_KEYS:
+        if key in lyrics_result:
+            merged[key] = lyrics_result[key]
+    return merged
+
+
+def _write_json_atomic(path: Path, payload: dict):
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _lyrics_refresh_lock(video_id: str) -> asyncio.Lock:
+    lock = lyrics_refresh_locks.get(video_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        lyrics_refresh_locks[video_id] = lock
+    return lock
 
 
 @app.get("/health")
@@ -255,6 +304,77 @@ async def track(video_id: str):
     return meta
 
 
+@app.post("/track/{video_id}/lyrics/refresh")
+async def refresh_track_lyrics(video_id: str):
+    async with _lyrics_refresh_lock(video_id):
+        meta_path = PROCESSED_DIR / video_id / "meta.json"
+
+        if not meta_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=error_payload(
+                    "track_not_found",
+                    "Track metadata was not found.",
+                ),
+            )
+
+        with open(meta_path, "r", encoding="utf-8") as file:
+            meta = json.load(file)
+
+        configured_audio_path = meta.get("full_audio_path")
+        audio_path = (
+            Path(configured_audio_path)
+            if configured_audio_path
+            else DOWNLOADS_DIR / f"{video_id}.wav"
+        )
+        if not audio_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=error_payload(
+                    "full_audio_not_found",
+                    "Full audio was not found for this track.",
+                ),
+            )
+
+        if meta.get("status") != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail=error_payload(
+                    "track_not_ready",
+                    "Track is not ready for lyric refresh.",
+                ),
+            )
+
+        try:
+            lyrics_result = await resolve_lrclib_lyrics(
+                meta.get("title", ""),
+                meta.get("artist", ""),
+                _audio_duration(audio_path),
+            )
+        except LyricsNotFound as error:
+            raise HTTPException(
+                status_code=404,
+                detail=error_payload(
+                    "lyrics_not_found",
+                    "No matching synced lyrics were found on LRCLIB.",
+                    str(error),
+                ),
+            ) from error
+        except LyricsProviderUnavailable as error:
+            raise HTTPException(
+                status_code=503,
+                detail=error_payload(
+                    "lyrics_provider_unavailable",
+                    "LRCLIB is temporarily unavailable. Try again later.",
+                    str(error),
+                ),
+            ) from error
+
+        updated_meta = _merge_lyrics_metadata(meta, lyrics_result)
+        _write_json_atomic(meta_path, updated_meta)
+        return {"success": True, "track": updated_meta}
+
+
 @app.get("/audio/{video_id}/instrumental")
 async def audio_instrumental(video_id: str):
     path = PROCESSED_DIR / video_id / "no_vocals.wav"
@@ -341,8 +461,6 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
         shutil.rmtree(stems_dir, ignore_errors=True)
 
         # Create no_vocals.wav by mixing bass + drums + other
-        import soundfile as sf
-        
         bass_path = track_dir / "bass.wav"
         drums_path = track_dir / "drums.wav"
         other_path = track_dir / "other.wav"
@@ -362,23 +480,27 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
         jobs[job_id]["status"] = "fetching_lyrics"
         save_jobs()  # Save job status
         vocals_path = track_dir / "vocals.wav"
-        lyrics_result = asyncio.run(resolve_lyrics(title, artist, vocals_path, model_size=WHISPER_MODEL))
+        audio_duration = _audio_duration(audio_path)
+        lyrics_result = asyncio.run(resolve_lyrics(
+            title,
+            artist,
+            audio_duration,
+            vocals_path,
+            model_size=WHISPER_MODEL,
+        ))
         if lyrics_result.get("lyricsWarning"):
             jobs[job_id]["lyricsWarning"] = lyrics_result["lyricsWarning"]
             save_jobs()
 
-        meta = {
+        meta = _merge_lyrics_metadata({
             "videoId": video_id,
             "title": title,
             "artist": artist,
             "status": "ready",
-            "lyrics": lyrics_result["lyrics"],
-            "lyricsSource": lyrics_result["lyricsSource"],
-            "lyricsStatus": lyrics_result["lyricsStatus"],
             "mode": mode,
             "saved": save,
             "full_audio_path": str(DOWNLOADS_DIR / f"{video_id}.wav"),
-        }
+        }, lyrics_result)
         meta_path = track_dir / "meta.json"
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)

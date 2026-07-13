@@ -34,12 +34,15 @@ const API_BASE = typeof window !== 'undefined'
 async function readJsonError(res: Response, fallback: string) {
   try {
     const data = await res.json()
+    const nestedDetail = data?.detail
     const payload = data?.error
+      ?? (nestedDetail && typeof nestedDetail === 'object' ? nestedDetail : null)
+
     if (payload?.message) {
       return new ApiClientError(payload.message, payload.code, payload.detail)
     }
-    if (data?.detail) {
-      return new ApiClientError(String(data.detail))
+    if (typeof nestedDetail === 'string' && nestedDetail) {
+      return new ApiClientError(nestedDetail)
     }
   } catch {
     return new ApiClientError(fallback)
@@ -163,6 +166,16 @@ export async function getTrack(videoId: string) {
   const res = await fetch(`${API_BASE}/track/${videoId}`);
   if (!res.ok) throw new Error("Track not found");
   return res.json();
+}
+
+export async function refreshLyrics(videoId: string) {
+  const res = await fetch(`${API_BASE}/track/${videoId}/lyrics/refresh`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    throw await readJsonError(res, 'Lyrics could not be refreshed.')
+  }
+  return res.json()
 }
 
 export function getInstrumentalUrl(videoId: string) {
