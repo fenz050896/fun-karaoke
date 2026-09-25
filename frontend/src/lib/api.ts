@@ -182,6 +182,6 @@ export function getInstrumentalUrl(videoId: string) {
   return `${API_BASE}/audio/${videoId}/instrumental`;
 }
 
-export function getFullAudioUrl(videoId: string) {
-  return `${API_BASE}/audio/${videoId}/full`;
+export function getVocalsUrl(videoId: string) {
+  return `${API_BASE}/audio/${videoId}/vocals`;
 }

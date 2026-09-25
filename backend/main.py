@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -16,7 +16,8 @@ import config
 from config import DOWNLOADS_DIR, PROCESSED_DIR, DEMUCS_MODEL, WHISPER_MODEL, jobs, processing_queue, play_queue, save_jobs, save_play_queue
 from errors import error_payload
 from youtube import search_youtube_with_status, download_audio, DownloadError
-from stems import separate_stems
+from stems import PlaybackEncodeError, encode_playback_stems, separate_stems
+from media import ranged_file_response
 from lyrics_sync import (
     LyricsNotFound,
     LyricsProviderUnavailable,
@@ -103,7 +104,7 @@ async def track_exists(video_id: str):
             meta = json.load(f)
         return {"exists": True, "status": meta.get("status", "ready")}
     for job in jobs.values():
-        if job.get("videoId") == video_id and job.get("status") in ("queued", "downloading", "separating", "fetching_lyrics"):
+        if job.get("videoId") == video_id and job.get("status") in ("queued", "downloading", "separating", "encoding", "fetching_lyrics"):
             return {"exists": True, "status": "processing"}
     return {"exists": False, "status": "not_found"}
 
@@ -376,19 +377,15 @@ async def refresh_track_lyrics(video_id: str):
 
 
 @app.get("/audio/{video_id}/instrumental")
-async def audio_instrumental(video_id: str):
-    path = PROCESSED_DIR / video_id / "no_vocals.wav"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Instrumental not found")
-    return FileResponse(path, media_type="audio/wav")
+async def audio_instrumental(video_id: str, request: Request):
+    path = PROCESSED_DIR / video_id / "instrumental.m4a"
+    return ranged_file_response(request, path, "audio/mp4")
 
 
 @app.get("/audio/{video_id}/vocals")
-async def audio_vocals(video_id: str):
-    path = PROCESSED_DIR / video_id / "vocals.wav"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Vocals not found")
-    return FileResponse(path, media_type="audio/wav")
+async def audio_vocals(video_id: str, request: Request):
+    path = PROCESSED_DIR / video_id / "vocals.m4a"
+    return ranged_file_response(request, path, "audio/mp4")
 
 
 @app.get("/local-files")
@@ -477,6 +474,10 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
             no_vocals_path = track_dir / "no_vocals.wav"
             sf.write(str(no_vocals_path), no_vocals, sr)
 
+        jobs[job_id]["status"] = "encoding"
+        save_jobs()
+        encode_playback_stems(track_dir)
+
         jobs[job_id]["status"] = "fetching_lyrics"
         save_jobs()  # Save job status
         vocals_path = track_dir / "vocals.wav"
@@ -508,6 +509,8 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
         jobs[job_id]["status"] = "ready"
         save_jobs()  # Save job status
     except DownloadError as e:
+        _set_job_error(job_id, e.code, e.message, e.detail)
+    except PlaybackEncodeError as e:
         _set_job_error(job_id, e.code, e.message, e.detail)
     except Exception as e:
         current_status = jobs[job_id].get("status")

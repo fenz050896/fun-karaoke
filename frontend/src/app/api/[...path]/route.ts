@@ -20,7 +20,6 @@ async function proxy(req: NextRequest) {
       body: req.method !== 'GET' && req.method !== 'HEAD' ? await req.arrayBuffer() : undefined,
     })
 
-    const body = await res.arrayBuffer()
     const responseHeaders: Record<string, string> = {}
     res.headers.forEach((value, key) => {
       if (!['content-encoding', 'transfer-encoding'].includes(key.toLowerCase())) {
@@ -28,7 +27,7 @@ async function proxy(req: NextRequest) {
       }
     })
 
-    return new NextResponse(body, {
+    return new NextResponse(res.body, {
       status: res.status,
       headers: responseHeaders,
     })

@@ -49,6 +49,7 @@ export default function ProcessingPage() {
       case 'queued': return 'Queued'
       case 'downloading': return 'Downloading'
       case 'separating': return 'Separating Stems'
+      case 'encoding': return 'Encoding Audio'
       case 'fetching_lyrics': return 'Fetching Lyrics'
       case 'ready': return 'Ready'
       case 'error': return 'Error'
@@ -60,8 +61,9 @@ export default function ProcessingPage() {
     switch (status) {
       case 'queued': return '10%'
       case 'downloading': return '30%'
-      case 'separating': return '60%'
-      case 'fetching_lyrics': return '80%'
+      case 'separating': return '55%'
+      case 'encoding': return '70%'
+      case 'fetching_lyrics': return '85%'
       case 'ready': return '100%'
       default: return '0%'
     }

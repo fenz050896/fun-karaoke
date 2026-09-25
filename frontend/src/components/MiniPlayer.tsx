@@ -5,7 +5,17 @@ import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 
 export default function MiniPlayer() {
-  const { track, isPlaying, currentTime, duration, playbackMode, togglePlay, setMode } = useAudio()
+  const {
+    track,
+    isPlaying,
+    currentTime,
+    duration,
+    playbackMode,
+    audioLoading,
+    audioError,
+    togglePlay,
+    setMode,
+  } = useAudio()
   const pathname = usePathname()
 
   // Hide on karaoke page (has its own full controls)
@@ -30,7 +40,9 @@ export default function MiniPlayer() {
           className="flex-1 min-w-0 hover:opacity-80 transition"
         >
           <p className="text-sm font-medium truncate text-zinc-100">{track.title}</p>
-          <p className="text-xs text-zinc-400 truncate">{track.artist || 'Unknown artist'}</p>
+          <p className={`text-xs truncate ${audioError ? 'text-red-400' : 'text-zinc-400'}`}>
+            {audioError || (audioLoading ? 'Buffering audio...' : track.artist || 'Unknown artist')}
+          </p>
         </Link>
 
         {/* Time */}

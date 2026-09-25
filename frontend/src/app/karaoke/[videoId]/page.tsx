@@ -29,7 +29,9 @@ export default function KaraokePage({
     currentTime,
     duration,
     loading,
+    audioLoading,
     error,
+    audioError,
     playTrack,
     reloadTrackMetadata,
     setMode,
@@ -136,12 +138,19 @@ export default function KaraokePage({
   }
 
   const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSeekValue(Number(e.target.value))
+    const time = Number(e.target.value)
+    setSeekValue(time)
+    if (!seekingRef.current) seek(time)
   }
 
-  const handleSeekEnd = () => {
+  const handleSeekEnd = (e: React.SyntheticEvent<HTMLInputElement>) => {
+    if (!seekingRef.current) return
     seekingRef.current = false
-    seek(seekValue)
+    seek(Number(e.currentTarget.value))
+  }
+
+  const handleSeekKeyDown = () => {
+    seekingRef.current = true
   }
 
   return (
@@ -189,11 +198,13 @@ export default function KaraokePage({
             max={duration || 0}
             step={0.1}
             value={seekValue}
-            onMouseDown={handleSeekStart}
-            onTouchStart={handleSeekStart}
+            onPointerDown={handleSeekStart}
             onChange={handleSeekChange}
-            onMouseUp={handleSeekEnd}
-            onTouchEnd={handleSeekEnd}
+            onPointerUp={handleSeekEnd}
+            onPointerCancel={handleSeekEnd}
+            onKeyDown={handleSeekKeyDown}
+            onKeyUp={handleSeekEnd}
+            onBlur={handleSeekEnd}
             className="flex-1 h-1.5 rounded-full appearance-none bg-zinc-800 cursor-pointer
               [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5
               [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-fuchsia-500 [&::-webkit-slider-thumb]:shadow-md
@@ -227,6 +238,14 @@ export default function KaraokePage({
             </button>
           </div>
         </div>
+        {(audioLoading || audioError) && (
+          <div className={`mt-1 text-xs ${audioError ? 'text-red-400' : 'text-zinc-500'}`}>
+            {audioError || 'Buffering audio...'}
+            {audioError && (
+              <button onClick={handleRetry} className="ml-2 underline hover:text-red-200">Retry audio</button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Divider */}
