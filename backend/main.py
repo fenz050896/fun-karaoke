@@ -3,10 +3,11 @@ import shutil
 import asyncio
 import json
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -16,8 +17,9 @@ import config
 from config import DOWNLOADS_DIR, PROCESSED_DIR, DEMUCS_MODEL, WHISPER_MODEL, jobs, processing_queue, play_queue, save_jobs, save_play_queue
 from errors import error_payload
 from youtube import search_youtube_with_status, download_audio, DownloadError
-from stems import PlaybackEncodeError, encode_playback_stems, separate_stems
+from stems import PlaybackEncodeError, StemSeparationError, encode_playback_stems, separate_stems
 from media import ranged_file_response
+from process_runner import ProcessCancelled, start_processes, stop_processes
 from lyrics_sync import (
     LyricsNotFound,
     LyricsProviderUnavailable,
@@ -25,7 +27,24 @@ from lyrics_sync import (
     resolve_lyrics,
 )
 
-app = FastAPI(title="Fun Karaoke API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_processes()
+    with config.processing_lock:
+        config.processing_stopping = False
+    _recover_processing_jobs()
+    try:
+        yield
+    finally:
+        with config.processing_lock:
+            config.processing_stopping = True
+            worker = config.processing_worker
+        stop_processes()
+        if worker is not None:
+            await asyncio.to_thread(worker.join)
+
+
+app = FastAPI(title="Fun Karaoke API", lifespan=lifespan)
 
 LYRIC_METADATA_KEYS = (
     "lyrics",
@@ -92,7 +111,7 @@ class ProcessRequest(BaseModel):
 
 
 @app.get("/search")
-async def search(q: str, max_results: int = 10, search_type: str = "all"):
+def search(q: str, max_results: int = 10, search_type: str = "all"):
     return search_youtube_with_status(q, max_results, search_type)
 
 
@@ -103,9 +122,10 @@ async def track_exists(video_id: str):
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
         return {"exists": True, "status": meta.get("status", "ready")}
-    for job in jobs.values():
-        if job.get("videoId") == video_id and job.get("status") in ("queued", "downloading", "separating", "encoding", "fetching_lyrics"):
-            return {"exists": True, "status": "processing"}
+    with config.processing_lock:
+        for job in jobs.values():
+            if job.get("videoId") == video_id and job.get("status") in ("queued", "downloading", "separating", "encoding", "fetching_lyrics"):
+                return {"exists": True, "status": "processing"}
     return {"exists": False, "status": "not_found"}
 
 
@@ -118,7 +138,7 @@ async def audio_full(video_id: str):
 
 
 @app.post("/process")
-async def process(req: ProcessRequest, background_tasks: BackgroundTasks):
+async def process(req: ProcessRequest):
     video_id = req.videoId
     mode = req.mode or "karaoke"
     save = req.save if req.save is not None else True
@@ -139,32 +159,20 @@ async def process(req: ProcessRequest, background_tasks: BackgroundTasks):
                 }
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {
-        "jobId": job_id,
-        "videoId": video_id,
-        "title": req.title or "",
-        "artist": req.artist or "",
-        "status": "queued",
-        "error": None,
-        "mode": mode,
-        "saved": save,
-    }
-    config.processing_queue.append(job_id)
-    save_jobs()  # Save jobs to file
-
-    if config.processing_job_id is None:
-        config.processing_job_id = job_id
-        background_tasks.add_task(
-            _process_track,
-            job_id,
-            video_id,
-            req.title or "",
-            req.artist or "",
-            mode,
-            save,
-        )
-    else:
-        jobs[job_id]["status"] = "queued"
+    with config.processing_lock:
+        jobs[job_id] = {
+            "jobId": job_id,
+            "videoId": video_id,
+            "title": req.title or "",
+            "artist": req.artist or "",
+            "status": "queued",
+            "error": None,
+            "mode": mode,
+            "saved": save,
+        }
+        config.processing_queue.append(job_id)
+        save_jobs()
+        _start_next_queue_job()
 
     return {"jobId": job_id, "status": "queued", "mode": mode, "saved": save}
 
@@ -175,46 +183,45 @@ async def get_processing_queue():
     processing = []
     seen = set()
 
-    active_job_ids = []
-    if config.processing_job_id:
-        active_job_ids.append(config.processing_job_id)
-    active_job_ids.extend(config.processing_queue)
+    with config.processing_lock:
+        active_job_ids = []
+        if config.processing_job_id:
+            active_job_ids.append(config.processing_job_id)
+        active_job_ids.extend(config.processing_queue)
 
-    for jid in active_job_ids:
-        job = jobs.get(jid)
-        if job and job.get("status") != "ready" and jid not in seen:
-            processing.append(job)
-            seen.add(jid)
+        for jid in active_job_ids:
+            job = jobs.get(jid)
+            if job and job.get("status") != "ready" and jid not in seen:
+                processing.append(dict(job))
+                seen.add(jid)
 
-    for jid, job in jobs.items():
-        if job.get("status") != "ready" and jid not in seen:
-            processing.append(job)
+        for jid, job in jobs.items():
+            if job.get("status") != "ready" and jid not in seen:
+                processing.append(dict(job))
 
     return {"processing": processing}
 
 @app.delete("/processing-queue/errors")
 async def clear_failed_processing_jobs():
     """Remove failed jobs from persisted processing state."""
-    failed_job_ids = [
-        job_id
-        for job_id, job in list(jobs.items())
-        if job.get("status") == "error"
-    ]
+    with config.processing_lock:
+        failed_job_ids = [
+            job_id
+            for job_id, job in jobs.items()
+            if job.get("status") == "error"
+        ]
 
-    for job_id in failed_job_ids:
-        jobs.pop(job_id, None)
+        for job_id in failed_job_ids:
+            jobs.pop(job_id, None)
 
-    config.processing_queue[:] = [
-        job_id
-        for job_id in config.processing_queue
-        if job_id not in failed_job_ids
-    ]
+        config.processing_queue[:] = [
+            job_id
+            for job_id in config.processing_queue
+            if job_id not in failed_job_ids
+        ]
 
-    if config.processing_job_id in failed_job_ids:
-        config.processing_job_id = None
-
-    if failed_job_ids:
-        save_jobs()
+        if failed_job_ids:
+            save_jobs()
 
     return {"success": True, "removed": len(failed_job_ids)}
 
@@ -289,10 +296,11 @@ async def move_queue_item(video_id: str, direction: int = 1):
 
 @app.get("/status/{job_id}")
 async def status(job_id: str):
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    with config.processing_lock:
+        job = jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return dict(job)
 
 
 @app.get("/track/{video_id}")
@@ -404,46 +412,96 @@ async def get_local_files():
     return {"files": files}
 
 
-def _start_next_queue_job():
-    config.processing_job_id = None
-    while config.processing_queue:
-        next_job_id = config.processing_queue.pop(0)
-        job = jobs.get(next_job_id)
-        if job and job.get("status") == "queued":
-            config.processing_job_id = next_job_id
-            def run_next():
-                _process_track(
-                    next_job_id,
-                    job["videoId"],
-                    job.get("title", ""),
-                    job.get("artist", ""),
-                    job.get("mode", "karaoke"),
-                    job.get("saved", True),
+def _recover_processing_jobs():
+    with config.processing_lock:
+        if config.processing_job_id is not None:
+            return
+        config.processing_queue.clear()
+        for job_id, job in jobs.items():
+            if job.get("status") not in (
+                "queued", "downloading", "separating", "encoding", "fetching_lyrics",
+            ):
+                continue
+            track_dir = PROCESSED_DIR / job["videoId"]
+            try:
+                with open(track_dir / "meta.json", "r", encoding="utf-8") as file:
+                    meta = json.load(file)
+                outputs = (track_dir / "instrumental.m4a", track_dir / "vocals.m4a")
+                complete = (
+                    isinstance(meta, dict)
+                    and meta.get("jobId") == job_id
+                    and meta.get("status") == "ready"
+                    and all(path.is_file() and path.stat().st_size > 0 for path in outputs)
                 )
-            threading.Thread(target=run_next, daemon=True).start()
-            break
+            except (OSError, ValueError):
+                complete = False
+            job["status"] = "ready" if complete else "queued"
+            job["error"] = None
+            for field in ("errorCode", "errorMessage", "errorDetail", "lyricsWarning"):
+                job.pop(field, None)
+            if not complete:
+                config.processing_queue.append(job_id)
+        save_jobs()
+        _start_next_queue_job()
+
+
+def _start_next_queue_job(completed_job_id: Optional[str] = None):
+    with config.processing_lock:
+        if completed_job_id is not None:
+            if config.processing_job_id != completed_job_id:
+                return
+            config.processing_job_id = None
+            config.processing_worker = None
+        elif config.processing_job_id is not None:
+            return
+        if config.processing_stopping:
+            return
+        while config.processing_queue:
+            next_job_id = config.processing_queue.pop(0)
+            job = jobs.get(next_job_id)
+            if job and job.get("status") == "queued":
+                config.processing_job_id = next_job_id
+                config.processing_worker = threading.Thread(
+                    target=_process_track,
+                    args=(
+                        next_job_id,
+                        job["videoId"],
+                        job.get("title", ""),
+                        job.get("artist", ""),
+                        job.get("mode", "karaoke"),
+                        job.get("saved", True),
+                    ),
+                    daemon=True,
+                )
+                config.processing_worker.start()
+                break
+
+
+def _set_job_status(job_id: str, status: str):
+    with config.processing_lock:
+        jobs[job_id]["status"] = status
+        save_jobs()
 
 
 def _set_job_error(job_id: str, code: str, message: str, detail: Optional[str] = None):
-    jobs[job_id]["status"] = "error"
-    jobs[job_id]["error"] = message
-    jobs[job_id]["errorCode"] = code
-    jobs[job_id]["errorMessage"] = message
-    if detail:
-        jobs[job_id]["errorDetail"] = detail
-    else:
-        jobs[job_id].pop("errorDetail", None)
-    save_jobs()
+    with config.processing_lock:
+        jobs[job_id]["status"] = "error"
+        jobs[job_id]["error"] = message
+        jobs[job_id]["errorCode"] = code
+        jobs[job_id]["errorMessage"] = message
+        if detail:
+            jobs[job_id]["errorDetail"] = detail
+        else:
+            jobs[job_id].pop("errorDetail", None)
+        save_jobs()
 
 
 def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: str, save: bool):
     try:
-        jobs[job_id]["status"] = "downloading"
-        save_jobs()  # Save job status
+        _set_job_status(job_id, "downloading")
         audio_path = download_audio(video_id, DOWNLOADS_DIR)
 
-        jobs[job_id]["status"] = "separating"
-        save_jobs()  # Save job status
+        _set_job_status(job_id, "separating")
         track_dir = PROCESSED_DIR / video_id
         track_dir.mkdir(parents=True, exist_ok=True)
         stems_dir = separate_stems(audio_path, track_dir, model=DEMUCS_MODEL)
@@ -474,12 +532,10 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
             no_vocals_path = track_dir / "no_vocals.wav"
             sf.write(str(no_vocals_path), no_vocals, sr)
 
-        jobs[job_id]["status"] = "encoding"
-        save_jobs()
+        _set_job_status(job_id, "encoding")
         encode_playback_stems(track_dir)
 
-        jobs[job_id]["status"] = "fetching_lyrics"
-        save_jobs()  # Save job status
+        _set_job_status(job_id, "fetching_lyrics")
         vocals_path = track_dir / "vocals.wav"
         audio_duration = _audio_duration(audio_path)
         lyrics_result = asyncio.run(resolve_lyrics(
@@ -490,10 +546,12 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
             model_size=WHISPER_MODEL,
         ))
         if lyrics_result.get("lyricsWarning"):
-            jobs[job_id]["lyricsWarning"] = lyrics_result["lyricsWarning"]
-            save_jobs()
+            with config.processing_lock:
+                jobs[job_id]["lyricsWarning"] = lyrics_result["lyricsWarning"]
+                save_jobs()
 
         meta = _merge_lyrics_metadata({
+            "jobId": job_id,
             "videoId": video_id,
             "title": title,
             "artist": artist,
@@ -503,14 +561,12 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
             "full_audio_path": str(DOWNLOADS_DIR / f"{video_id}.wav"),
         }, lyrics_result)
         meta_path = track_dir / "meta.json"
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+        _write_json_atomic(meta_path, meta)
 
-        jobs[job_id]["status"] = "ready"
-        save_jobs()  # Save job status
-    except DownloadError as e:
-        _set_job_error(job_id, e.code, e.message, e.detail)
-    except PlaybackEncodeError as e:
+        _set_job_status(job_id, "ready")
+    except ProcessCancelled:
+        pass
+    except (DownloadError, StemSeparationError, PlaybackEncodeError) as e:
         _set_job_error(job_id, e.code, e.message, e.detail)
     except Exception as e:
         current_status = jobs[job_id].get("status")
@@ -529,7 +585,7 @@ def _process_track(job_id: str, video_id: str, title: str, artist: str, mode: st
                 str(e),
             )
     finally:
-        _start_next_queue_job()
+        _start_next_queue_job(job_id)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,21 @@
 import subprocess
 import shutil
+import sys
 from pathlib import Path
 
 from errors import AppError, truncate_detail
+from process_runner import run_process
+
+
+STEMS_TIMEOUT_SECONDS = 1800
+ENCODE_TIMEOUT_SECONDS = 600
 
 
 class PlaybackEncodeError(AppError):
+    pass
+
+
+class StemSeparationError(AppError):
     pass
 
 
@@ -13,13 +23,20 @@ def separate_stems(audio_path: Path, output_dir: Path, model: str = "htdemucs") 
     """Run demucs on audio_path and return the folder containing stems."""
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "python3", "-m", "demucs.separate",
+        sys.executable, "-m", "demucs.separate",
         "-n", model,  # Changed from --model to -n
         "--out", str(output_dir),
         "--filename", "{stem}.{ext}",
         str(audio_path),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        run_process(cmd, timeout=STEMS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise StemSeparationError(
+            code="stems_timeout",
+            message="Stem separation timed out. Try again or choose a shorter video.",
+            detail=truncate_detail(str(error)),
+        ) from error
     
     # demucs creates output_dir/{model}/ with stem files directly
     stems_dir = output_dir / model
@@ -79,7 +96,7 @@ def encode_playback_stems(track_dir: Path):
     ]
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        run_process(cmd, timeout=ENCODE_TIMEOUT_SECONDS)
         if any(not path.is_file() or path.stat().st_size == 0 for path in (instrumental_temp, vocals_temp)):
             raise PlaybackEncodeError(
                 code="audio_encode_failed",
@@ -90,6 +107,12 @@ def encode_playback_stems(track_dir: Path):
         vocals_temp.replace(vocals_path)
     except PlaybackEncodeError:
         raise
+    except subprocess.TimeoutExpired as error:
+        raise PlaybackEncodeError(
+            code="audio_encode_timeout",
+            message="Audio encoding timed out. Try again or choose a shorter video.",
+            detail=truncate_detail(str(error)),
+        ) from error
     except subprocess.CalledProcessError as error:
         detail = error.stderr or error.stdout or str(error)
         raise PlaybackEncodeError(

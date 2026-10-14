@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import List, Dict
 
 from errors import AppError, error_payload, truncate_detail
+from process_runner import run_process
 
 logger = logging.getLogger(__name__)
+DOWNLOAD_TIMEOUT_SECONDS = 600
 
 # Path to cookies file
 COOKIES_FILE = Path(__file__).parent / "youtube_cookies.txt"
@@ -198,7 +200,13 @@ def download_audio(video_id: str, output_dir: Path) -> Path:
         logger.warning(f"Downloading {video_id} without cookies - may fail")
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        run_process(cmd, timeout=DOWNLOAD_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as e:
+        raise DownloadError(
+            code="download_timeout",
+            message="YouTube download timed out. Try again or choose a shorter video.",
+            detail=truncate_detail(str(e)),
+        ) from e
     except subprocess.CalledProcessError as e:
         detail = e.stderr or e.stdout or str(e)
         raise DownloadError(

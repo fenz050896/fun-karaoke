@@ -1,10 +1,18 @@
 import asyncio
+import json
 import re
+import subprocess
+import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
 
+from errors import truncate_detail
+from process_runner import run_process
+
 
 LRCLIB_BASE_URL = "https://lrclib.net/api"
+WHISPER_TIMEOUT_SECONDS = 1200
 DURATION_TOLERANCE_SECONDS = 10.0
 RETRY_DELAYS_SECONDS = (0.5, 1.0)
 PRESENTATION_LABEL_RE = re.compile(
@@ -271,7 +279,18 @@ async def resolve_lrclib_lyrics(
 
 
 def transcribe_with_whisper(audio_path: Path, model_size: str = "base") -> List[Dict]:
-    """Transcribe vocals with faster-whisper and return lyrics-like segments."""
+    """Transcribe vocals in a subprocess that can be stopped on timeout."""
+    cmd = [sys.executable, str(Path(__file__).resolve()), str(audio_path), model_size]
+    try:
+        result = run_process(cmd, timeout=WHISPER_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Whisper transcription timed out.") from error
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(truncate_detail(error.stderr) or "Whisper transcription failed.") from error
+    return json.loads(result.stdout)
+
+
+def _transcribe_with_whisper(audio_path: Path, model_size: str) -> List[Dict]:
     from faster_whisper import WhisperModel
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
     segments, _ = model.transcribe(str(audio_path), beam_size=5, language=None)
@@ -332,3 +351,9 @@ async def resolve_lyrics(
     if warning:
         result["lyricsWarning"] = warning
     return result
+
+
+if __name__ == "__main__":
+    with redirect_stdout(sys.stderr):
+        lyrics = _transcribe_with_whisper(Path(sys.argv[1]), sys.argv[2])
+    print(json.dumps(lyrics, ensure_ascii=False))

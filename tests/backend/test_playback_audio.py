@@ -8,7 +8,7 @@ from stems import PlaybackEncodeError, encode_playback_stems
 
 
 class PlaybackAudioTests(unittest.TestCase):
-    @patch("stems.subprocess.run")
+    @patch("stems.run_process")
     def test_encode_playback_stems_creates_atomic_aac_outputs(self, run):
         def create_outputs(cmd, **kwargs):
             for value in cmd:
@@ -44,7 +44,7 @@ class PlaybackAudioTests(unittest.TestCase):
         self.assertEqual(cmd.count("2"), 2)
         self.assertEqual(cmd.count("+faststart"), 2)
 
-    @patch("stems.subprocess.run")
+    @patch("stems.run_process")
     def test_empty_output_is_rejected_and_keeps_old_files(self, run):
         def create_outputs(cmd, **kwargs):
             for value in cmd:
@@ -68,7 +68,7 @@ class PlaybackAudioTests(unittest.TestCase):
             self.assertFalse((track_dir / "instrumental.tmp.m4a").exists())
             self.assertFalse((track_dir / "vocals.tmp.m4a").exists())
 
-    @patch("stems.subprocess.run")
+    @patch("stems.run_process")
     def test_encode_failure_removes_temporary_outputs_and_keeps_old_files(self, run):
         def fail_with_partial_output(cmd, **kwargs):
             Path(cmd[-1]).touch()
@@ -110,6 +110,32 @@ class PlaybackAudioTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "audio_encode_failed")
         self.assertIn("vocals.wav", raised.exception.detail)
+
+    @patch("stems.run_process", create=True)
+    def test_encoding_timeout_preserves_old_audio_and_removes_partial_outputs(self, run):
+        def time_out(cmd, **kwargs):
+            for value in cmd:
+                if value.endswith(".tmp.m4a"):
+                    Path(value).write_bytes(b"partial")
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=600)
+
+        run.side_effect = time_out
+        with tempfile.TemporaryDirectory() as tmpdir:
+            track_dir = Path(tmpdir)
+            (track_dir / "no_vocals.wav").touch()
+            (track_dir / "vocals.wav").touch()
+            (track_dir / "instrumental.m4a").write_bytes(b"old instrumental")
+            (track_dir / "vocals.m4a").write_bytes(b"old vocals")
+
+            with self.assertRaises(PlaybackEncodeError) as raised:
+                encode_playback_stems(track_dir)
+
+            self.assertEqual((track_dir / "instrumental.m4a").read_bytes(), b"old instrumental")
+            self.assertEqual((track_dir / "vocals.m4a").read_bytes(), b"old vocals")
+            self.assertFalse((track_dir / "instrumental.tmp.m4a").exists())
+            self.assertFalse((track_dir / "vocals.tmp.m4a").exists())
+        self.assertEqual(raised.exception.code, "audio_encode_timeout")
+        self.assertEqual(run.call_args.kwargs["timeout"], 600)
 
 
 if __name__ == "__main__":

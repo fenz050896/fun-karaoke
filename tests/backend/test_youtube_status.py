@@ -74,7 +74,7 @@ class YouTubeStatusTests(unittest.TestCase):
         self.assertEqual(response["error"], None)
         self.assertEqual(response["results"][0]["videoId"], "abc123")
 
-    @patch("youtube.subprocess.run")
+    @patch("youtube.run_process")
     @patch("youtube.COOKIES_FILE")
     def test_download_failure_raises_structured_error(self, cookies_file, run):
         cookies_file.exists.return_value = True
@@ -91,6 +91,18 @@ class YouTubeStatusTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "download_failed")
         self.assertIn("YouTube", raised.exception.message)
         self.assertIn("Sign in", raised.exception.detail)
+
+    @patch("youtube.run_process")
+    def test_download_timeout_raises_specific_error_and_has_finite_deadline(self, run):
+        run.side_effect = subprocess.TimeoutExpired(cmd=["yt-dlp"], timeout=600)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(DownloadError) as raised:
+                download_audio("abc123", Path(tmpdir))
+
+        self.assertEqual(raised.exception.code, "download_timeout")
+        self.assertIn("timed out", raised.exception.message.lower())
+        self.assertEqual(run.call_args.kwargs["timeout"], 600)
 
 
 if __name__ == "__main__":
