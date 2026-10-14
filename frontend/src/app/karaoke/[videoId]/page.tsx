@@ -94,6 +94,12 @@ export default function KaraokePage({
   const canRefreshLyrics = track?.lyricsSource === 'whisper'
     || track?.lyricsSource === 'none'
 
+  const upcomingQueue = useMemo(() => {
+    return queue.filter((item) => item.videoId !== videoId)
+  }, [queue, videoId])
+
+  const progress = duration > 0 ? Math.min((currentTime / duration) * 100, 100) : 0
+
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [activeIndex])
@@ -351,44 +357,85 @@ export default function KaraokePage({
           </div>
         </div>
 
-        {/* Queue */}
+        {/* Now Playing + Queue */}
         <div className="flex flex-col min-h-0 border-l border-zinc-900 px-4 py-3">
-          <div className="shrink-0 mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Queue</h2>
-            <span className="text-xs text-zinc-600">{queue.length} songs</span>
+          <div className="shrink-0 mb-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Now Playing</h2>
+              <span className="text-xs text-zinc-600">{isPlaying ? "Playing" : "Paused"}</span>
+            </div>
+
+            <div className="rounded-lg border border-fuchsia-500/60 bg-fuchsia-500/10 p-3">
+              <div className="flex items-start gap-3">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-zinc-100 text-zinc-950">
+                  {isPlaying ? (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="4" width="4" height="16" rx="1" />
+                      <rect x="14" y="4" width="4" height="16" rx="1" />
+                    </svg>
+                  ) : (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5,3 19,12 5,21" />
+                    </svg>
+                  )}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-zinc-100">
+                    {track?.title || "Loading..."}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-zinc-400">
+                    {loading
+                      ? "Loading track..."
+                      : audioError
+                        ? "Audio unavailable"
+                        : audioLoading
+                          ? "Buffering audio..."
+                          : track?.artist || "Unknown artist"}
+                  </p>
+                  <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                    <div
+                      className="h-full rounded-full bg-fuchsia-400"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-[11px] tabular-nums text-zinc-500">
+                    <span>{formatTime(currentTime)}</span>
+                    <span>{formatTime(duration)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
-          {queue.length === 0 ? (
+          <div className="shrink-0 mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Queue</h2>
+            <span className="text-xs text-zinc-600">{upcomingQueue.length} songs</span>
+          </div>
+
+          {upcomingQueue.length === 0 ? (
             <p className="text-zinc-500 text-sm">Queue is empty</p>
           ) : (
             <div className="flex-1 space-y-2 overflow-y-auto pr-2 min-h-0">
-              {queue.map((item, index) => (
+              {upcomingQueue.map((item, index) => (
                 <div
                   key={item.videoId}
-                  className={`p-3 rounded-lg border ${
-                    item.videoId === videoId
-                      ? 'border-fuchsia-500 bg-fuchsia-500/10'
-                      : 'border-zinc-800 bg-zinc-900/50'
-                  }`}
+                  className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/50"
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <span className="w-5 h-5 flex items-center justify-center bg-zinc-800 rounded-full text-xs shrink-0">
                       {index + 1}
                     </span>
-                    <p className="font-medium text-sm truncate">
-                      {item.videoId === videoId ? '▶ ' : ''}{item.title}
-                    </p>
+                    <p className="font-medium text-sm truncate">{item.title}</p>
                   </div>
                   <p className="text-xs text-zinc-400 truncate ml-7">{item.artist}</p>
                   <div className="flex items-center gap-2 mt-2 ml-7">
-                    {item.videoId !== videoId && (
-                      <button
-                        onClick={() => handlePlayFromQueue(item.videoId)}
-                        className="px-2 py-1 rounded bg-zinc-100 text-zinc-950 text-xs font-medium hover:bg-zinc-200"
-                      >
-                        Play
-                      </button>
-                    )}
+                    <button
+                      onClick={() => handlePlayFromQueue(item.videoId)}
+                      className="px-2 py-1 rounded bg-zinc-100 text-zinc-950 text-xs font-medium hover:bg-zinc-200"
+                    >
+                      Play
+                    </button>
                     <button
                       onClick={() => handleRemoveFromQueue(item.videoId)}
                       className="px-2 py-1 rounded bg-zinc-800 text-zinc-200 text-xs font-medium hover:bg-zinc-700"
