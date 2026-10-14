@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_TIMEOUT_SECONDS = 600
 
 # Path to cookies file
-COOKIES_FILE = Path(__file__).parent / "youtube_cookies.txt"
+COOKIES_FILE = Path(__file__).parent / "youtube-auth" / "youtube_cookies.txt"
 
 
 class DownloadError(AppError):
@@ -86,6 +87,17 @@ def _classify_search_failure(
     )
 
 
+def _cookies_file() -> Path:
+    return Path(os.environ.get("YOUTUBE_COOKIES_FILE", COOKIES_FILE))
+
+
+def _cookies_available(cookies_file: Path) -> bool:
+    try:
+        return cookies_file.is_file() and cookies_file.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _yt_dlp_js_runtime_args() -> List[str]:
     deno_path = shutil.which("deno")
     if deno_path:
@@ -123,10 +135,11 @@ def search_youtube_with_status(query: str, max_results: int = 10, search_type: s
         f"ytsearch{max_results}:{search_query}",
     ]
 
-    cookies_present = COOKIES_FILE.exists()
+    cookies_file = _cookies_file()
+    cookies_present = _cookies_available(cookies_file)
     if cookies_present:
-        cmd.extend(["--cookies", str(COOKIES_FILE)])
-        logger.info("Using cookies from youtube_cookies.txt")
+        cmd.extend(["--cookies", str(cookies_file)])
+        logger.info(f"Using YouTube cookies from {cookies_file}")
     else:
         cmd.extend(["--extractor-args", "youtube:player_client=android"])
         logger.warning("No cookies file found. YouTube search may fail due to bot detection.")
@@ -192,10 +205,11 @@ def download_audio(video_id: str, output_dir: Path) -> Path:
     ]
 
     # Add cookies and JS runtime for download if available
-    if COOKIES_FILE.exists():
-        cmd.extend(["--cookies", str(COOKIES_FILE)])
+    cookies_file = _cookies_file()
+    if _cookies_available(cookies_file):
+        cmd.extend(["--cookies", str(cookies_file)])
         cmd.extend(_yt_dlp_js_runtime_args())
-        logger.info(f"Downloading {video_id} with cookies")
+        logger.info(f"Downloading {video_id} with cookies from {cookies_file}")
     else:
         logger.warning(f"Downloading {video_id} without cookies - may fail")
 

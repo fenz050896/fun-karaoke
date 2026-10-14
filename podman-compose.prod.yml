@@ -9,9 +9,10 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
-      - ./backend/youtube_cookies.txt:/app/youtube_cookies.txt
+      - ./backend/youtube-auth:/app/youtube-auth
     environment:
       - PYTHONUNBUFFERED=1
+      - YOUTUBE_COOKIES_FILE=/app/youtube-auth/youtube_cookies.txt
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health"]

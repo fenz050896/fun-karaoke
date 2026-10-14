@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch
 from youtube import (
     DownloadError,
     _classify_search_failure,
+    _cookies_available,
+    _cookies_file,
     _parse_search_output,
     download_audio,
     search_youtube_with_status,
@@ -47,9 +49,8 @@ class YouTubeStatusTests(unittest.TestCase):
         self.assertIn("cookies", error["message"].lower())
 
     @patch("youtube.subprocess.run")
-    @patch("youtube.COOKIES_FILE")
-    def test_search_timeout_returns_status_response(self, cookies_file, run):
-        cookies_file.exists.return_value = True
+    @patch("youtube._cookies_available", return_value=True)
+    def test_search_timeout_returns_status_response(self, _cookies_available, run):
         run.side_effect = subprocess.TimeoutExpired(cmd="yt-dlp", timeout=30)
 
         response = search_youtube_with_status("hello", max_results=3, search_type="all")
@@ -59,9 +60,8 @@ class YouTubeStatusTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], "youtube_timeout")
 
     @patch("youtube.subprocess.run")
-    @patch("youtube.COOKIES_FILE")
-    def test_search_success_returns_status_response(self, cookies_file, run):
-        cookies_file.exists.return_value = True
+    @patch("youtube._cookies_available", return_value=True)
+    def test_search_success_returns_status_response(self, _cookies_available, run):
         run.return_value = Mock(
             returncode=0,
             stdout="abc123|Song Title|183|Artist Name\n",
@@ -75,9 +75,8 @@ class YouTubeStatusTests(unittest.TestCase):
         self.assertEqual(response["results"][0]["videoId"], "abc123")
 
     @patch("youtube.run_process")
-    @patch("youtube.COOKIES_FILE")
-    def test_download_failure_raises_structured_error(self, cookies_file, run):
-        cookies_file.exists.return_value = True
+    @patch("youtube._cookies_available", return_value=True)
+    def test_download_failure_raises_structured_error(self, _cookies_available, run):
         run.side_effect = subprocess.CalledProcessError(
             returncode=1,
             cmd=["yt-dlp"],
@@ -91,6 +90,36 @@ class YouTubeStatusTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "download_failed")
         self.assertIn("YouTube", raised.exception.message)
         self.assertIn("Sign in", raised.exception.detail)
+
+    @patch.dict("youtube.os.environ", {"YOUTUBE_COOKIES_FILE": "/tmp/youtube.txt"})
+    def test_cookies_file_uses_configured_path(self):
+        self.assertEqual(_cookies_file(), Path("/tmp/youtube.txt"))
+
+    def test_empty_cookie_file_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cookies_file = Path(tmpdir) / "youtube.txt"
+            cookies_file.touch()
+
+            self.assertFalse(_cookies_available(cookies_file))
+
+    @patch("youtube._yt_dlp_js_runtime_args", return_value=["--js-runtimes", "deno:/usr/bin/deno"])
+    @patch("youtube.run_process")
+    def test_download_uses_configured_cookie_file(self, run, js_runtime_args):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cookies_file = Path(tmpdir) / "youtube.txt"
+            cookies_file.write_text("cookie")
+            output_path = Path(tmpdir) / "abc123.wav"
+            output_path.touch()
+
+            with patch.dict("youtube.os.environ", {"YOUTUBE_COOKIES_FILE": str(cookies_file)}):
+                download_audio("abc123", Path(tmpdir))
+
+        cmd = run.call_args.args[0]
+        cookies_index = cmd.index("--cookies")
+        self.assertEqual(cmd[cookies_index + 1], str(cookies_file))
+        self.assertIn("deno:/usr/bin/deno", cmd)
+        self.assertNotIn("--extractor-args", cmd)
+        js_runtime_args.assert_called_once_with()
 
     @patch("youtube.run_process")
     def test_download_timeout_raises_specific_error_and_has_finite_deadline(self, run):

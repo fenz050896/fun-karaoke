@@ -26,8 +26,8 @@ require_podman() {
 }
 
 check_env() {
-  if [ ! -f "backend/youtube_cookies.txt" ]; then
-    echo "⚠️  backend/youtube_cookies.txt not found — YouTube downloads may fail (see YOUTUBE_AUTH.md)"
+  if [ ! -f "backend/youtube-auth/youtube_cookies.txt" ]; then
+    echo "⚠️  backend/youtube-auth/youtube_cookies.txt not found — YouTube downloads may fail (see YOUTUBE_AUTH.md)"
   fi
   if [ ! -d "data" ]; then
     mkdir -p data
@@ -63,7 +63,7 @@ cmd_build() {
   echo "🔨 rebuilding images..."
   podman-compose -f "$COMPOSE_PROD" build --no-cache
   echo "🚀 starting..."
-  podman-compose -f "$COMPOSE_PROD" up -d
+  podman-compose -f "$COMPOSE_PROD" up -d --force-recreate
   echo "✅ done"
 }
 

@@ -15,6 +15,7 @@ backend/data/
 
 # Secrets & local config
 backend/youtube_cookies.txt
+backend/youtube-auth/
 .claude/settings.local.json
 
 # Backups
